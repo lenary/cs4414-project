@@ -1,8 +1,10 @@
 extern crate serialize;
+// extern crate sync;
 
 use std::io::{BufferedReader,File,IoResult,IoError,InvalidInput,EndOfFile,Append,Write};
 use std::vec;
 use serialize::json;
+// use sync::RWArc;
 
 use log_entry::LogEntry;
 use serror::{InvalidArgument,InvalidState,SError};
@@ -11,6 +13,7 @@ mod append_entries_request;
 mod log_entry;
 mod serror;
 
+//#[deriving(Clone)]
 pub struct Log {
     file: File,      // open File with Append/Write state
     path: Path,      // path to log // TODO: dir? file?
@@ -23,7 +26,7 @@ pub struct Log {
 }
 
 impl Log {
-    fn new(path: Path) -> IoResult<~Log> {
+    pub fn new(path: Path) -> IoResult<~Log> {
         let mut commit_idx = 0;
         let mut term = 0;
         if path.exists() {
@@ -58,7 +61,7 @@ impl Log {
     ///
     /// Writes a single log entry to the end of the log. 
     /// 
-    fn append_entry(&mut self, entry: LogEntry) -> IoResult<()> {
+    pub fn append_entry(&mut self, entry: LogEntry) -> IoResult<()> {
         // TODO: may need locking here later
         if entry.term < self.curr_term {
             let errmsg = format!("schooner.Log: Term of entry ({:u}) is earlier than current term ({:u})",
