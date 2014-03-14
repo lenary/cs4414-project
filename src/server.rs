@@ -1,7 +1,10 @@
 extern crate serialize;
 extern crate sync;
 
+use std::comm::Data;
 use std::io::{InvalidInput,IoError,IoResult};
+use std::sync::atomics::{AtomicBool,AcqRel,INIT_ATOMIC_BOOL};
+    
 use sync::{SyncChan, SyncPort};
 // use std::comm::{Empty, Data, Disconnected};
 
@@ -15,6 +18,8 @@ pub mod serror;
 // static DEFAULT_HEARTBEAT_INTERVAL: uint = 50;   // in millis
 // static DEFAULT_ELECTION_TIMEOUT  : uint = 150;  // in millis
 
+static mut ab: AtomicBool = INIT_ATOMIC_BOOL;
+
 /* ---[ data structures ]--- */
 
 #[deriving(Clone, Eq)]
@@ -26,7 +31,6 @@ pub enum State {
     Snapshotting
 }
 
-//#[deriving(Clone)]
 pub struct Server {
     name: ~str,
     path: Path,
@@ -35,19 +39,17 @@ pub struct Server {
 	conx_str: ~str,
 
     priv log: ~Log,  // TODO: should this just be Log (on stack => can it be copied arnd?)
-    
-    stopped_chan: SyncChan<()>,  // chan/port for messaging a stop signal
-    stopped_port: SyncPort<()>,
-    
+
     c: Chan<~Event>,  // TODO: keep chan or port?
-    p: Port<~Event>,  // FIXME: temp keep both ends of the channel
+    p: Port<~Event>,
     // more later
 }
 
 pub struct Event {
+    msg: ~str,  // bogus => just to get started
     // target: ??,
     // return_val: ??,
-    c: Chan<SError>,   // TODO: chan or port?  // TODO: what errors?
+    // c: Chan<SError>,   // TODO: chan or port?  // TODO: what errors?
 }
 
 /* ---[ functions ]--- */
@@ -64,9 +66,7 @@ impl Server {
                 detail: None,
             });
         }
-        // TODO: what are we going to do with pt => who gets it?
         let (pt, ch): (Port<~Event>, Chan<~Event>) = Chan::new();
-        let (stopp, stopc): (SyncPort<()>, SyncChan<()>) = sync::rendezvous();
 
         let lg = try!(Log::new(logpath.clone()));
         
@@ -77,8 +77,6 @@ impl Server {
             current_term: 0,
             conx_str: connection_str,
             log: lg,
-            stopped_chan: stopc,
-            stopped_port: stopp,
             c: ch,
             p: pt,                
         };
@@ -86,8 +84,10 @@ impl Server {
         Ok(s)
     }
 
-    // TODO: need to return some type of error?
-    pub fn start(&mut self) -> Result<(), SError> {
+    ///
+    /// Central method that sets things up and then runs the server threads/tasks
+    /// 
+    pub fn run(&mut self) -> Result<(), SError> {
         if self.state != Stopped {
             return Err(InvalidState(~"schooner.Server: Server already running"));
         }
@@ -95,17 +95,19 @@ impl Server {
         self.current_term = self.log.curr_term;
         self.state = Follower;
 
-        // let server_clone = self.clone();
-        // spawn(proc() {
-        //     server_clone.serve_loop();
-        // });
+        let event_chan = self.c.clone();
+        spawn(proc() {
+            // needs to be a separate file/impl
+            network_listener(event_chan);
+        });
+        
+        self.serve_loop();
 
         Ok(())
     }
 
     fn serve_loop(&mut self) {
-        // LEFT OFF
-        println!("Now serving => put loop here");
+        println!("Now serving => loop until Stopped");
         loop {
             match self.state {
                 Follower     => self.follower_loop(),
@@ -114,12 +116,23 @@ impl Server {
                 Snapshotting => self.snapshotting_loop(),
                 Stopped      => break
             }
+            std::io::timer::sleep(1);            
         }
+        println!("Serve_loop END");        
     }
 
     fn follower_loop(&mut self) {
-        println!("follower loop");
-        self.state = Candidate;
+        let stopsig = unsafe{ ab.load(AcqRel) };
+        println!("follower loop; stop signal is: {:?}", stopsig);
+        match self.p.try_recv() {
+            Data(ev) => println!("event message: {}", ev.msg),
+            _ => ()
+        }
+        if stopsig {
+            self.state = Stopped;
+        } else {
+            self.state = Candidate;
+        }
     }
     fn candidate_loop(&mut self) {
         println!("candidate loop");
@@ -131,18 +144,33 @@ impl Server {
     }
     fn snapshotting_loop(&mut self) {
         println!("snapshotting loop");
-        self.state = Stopped;
+        self.state = Follower;
     }
 }
 
-// fn serve_loop(s: )
+
+fn network_listener(chan: Chan<~Event>) {
+    let ev = ~Event{msg: ~"hi there"};
+    chan.send(ev);
+    println!("network listener starting up ...");
+
+    std::io::timer::sleep(50);
+    let ev = ~Event{msg: ~"last msg"};
+    chan.send(ev);
+
+    unsafe{ ab.store(true, AcqRel); }
+    println!("network listener: set stop to {}", unsafe{ ab.load(AcqRel) });
+    
+    println!("network listener shutting down ...");
+}
+
 
 fn main() {
     let name = ~"S1";
-    let path = Path::new(~"log/S1");
+    let path = Path::new(~"datalog/S1");
     let conx = ~"127.0.0.1:7007";
     match Server::new(name, path, conx) {
-        Ok(mut s) => { s.start(); },
+        Ok(mut s) => { s.run(); },
         Err(e)    => { error!("{:?}", e); }
     }
 }

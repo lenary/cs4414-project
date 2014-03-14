@@ -13,7 +13,6 @@ mod append_entries_request;
 mod log_entry;
 mod serror;
 
-//#[deriving(Clone)]
 pub struct Log {
     file: File,      // open File with Append/Write state
     path: Path,      // path to log // TODO: dir? file?
