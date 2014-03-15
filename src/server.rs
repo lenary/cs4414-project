@@ -14,7 +14,7 @@ use serialize::json;
 
 // use std::comm::{Empty, Data, Disconnected};
 
-use append_entries_request::AppendEntriesRequest;
+use append_entries_request::{AppendEntriesRequest,AppendEntriesResponse};
 use log::Log;
 use log_entry::LogEntry; // should probably be log::entry::LogEntry => MOVE LATER
 use serror::{InvalidArgument,InvalidState,SError};
@@ -46,7 +46,7 @@ pub struct Server {
     name: ~str,
     path: Path,
     state: State,
-    current_term: u64,
+    current_term: u64,  // curr_term is already in the log, so why need in both? TODO: remove from one or t'other
 	conx_str: ~str,
 
     priv log: ~Log,  // TODO: should this just be Log (on stack => can it be copied arnd?)
@@ -67,7 +67,7 @@ pub struct Event {
 
 impl Server {
     pub fn new(name: ~str, logpath: Path, ipaddr: ~str, tcpport: uint) -> IoResult<~Server> {
-        
+
         if name == ~"" {
             return Err(IoError{
                 kind: InvalidInput,
@@ -79,7 +79,7 @@ impl Server {
 
         let lg = try!(Log::new(logpath.clone()));
         let conx_str = format!("{}:{:u}", &ipaddr, tcpport);
-        
+
         let s = ~Server {
             ip: ipaddr,
             tcpport: tcpport,  // TODO: could we use udp instead? are we doing our own ACKs at the app protocol level?
@@ -90,7 +90,7 @@ impl Server {
             conx_str: conx_str,  // TODO: what the hell is this for? (from goraft)
             log: lg,
             c: ch,
-            p: pt,                
+            p: pt,
         };
 
         Ok(s)
@@ -98,7 +98,7 @@ impl Server {
 
     ///
     /// Central method that sets things up and then runs the server threads/tasks
-    /// 
+    ///
     pub fn run(&mut self) -> Result<(), SError> {
         if self.state != Stopped {
             return Err(InvalidState(~"schooner.Server: Server already running"));
@@ -113,7 +113,7 @@ impl Server {
             // needs to be a separate file/impl
             network_listener(conx_str, event_chan);
         });
-        
+
         self.serve_loop();
 
         Ok(())
@@ -129,9 +129,9 @@ impl Server {
                 Snapshotting => self.snapshotting_loop(),
                 Stopped      => break
             }
-            std::io::timer::sleep(1);            
+            std::io::timer::sleep(1);
         }
-        println!("Serve_loop END");        
+        println!("Serve_loop END");
     }
 
     fn follower_loop(&mut self) {
@@ -156,18 +156,38 @@ impl Server {
                 println!("FWL: TIMEOUT!! => change state to Candidate");
                 self.state = Candidate;
                 break;
-                
+
             } else if ret == pt.id() {
                 let ev = pt.recv();
                 println!("follower: event message: {}", ev.msg);
-                println!("FLW: DEBUG 1 {:?} :: {:?}", ev.msg, is_stop_msg(ev.msg));
                 if is_stop_msg(ev.msg) {
                     println!("FLW: DEBUG 2");
                     unsafe{ stop.store(true, AcqRel); }
                     self.state = Stopped;
                     break;
+
+                } else {
+                    let result = log_entry::decode_log_entry(ev.msg);
+                    if result.is_err() {
+                        fail!("ERROR: Unable to decode msg into log_entry: {:?}.\nError is: {:?}", ev.msg, result.err());
+                    }
+                    let logentry = result.unwrap();
+                    let mut aeresp = AppendEntriesResponse{term: self.log.curr_term,
+                                                           curr_index: self.log.curr_idx,
+                                                           success: true};
+
+                    match self.log.append_entry(logentry) {
+                        Ok(_) => {
+                            println!("FWL: would now ACK TRUE back to sender (leader) with: {:?}", aeresp);
+                        },
+                        Err(e) => {
+                            aeresp.success = false;
+                            error!("{:?}", e);
+                            println!("FWL: would now ACK FALSE back to sender (leader) with: {:?}", aeresp);
+                        }
+                    }
                 }
-                println!("FLW: DEBUG 3");            
+                println!("FLW: DEBUG 3");
             }
         }
     }
@@ -176,7 +196,7 @@ impl Server {
         println!("candidate loop");
         self.state = Leader;
     }
-    
+
     fn leader_loop(&mut self) {
         println!("leader loop");
         self.state = Snapshotting;
@@ -192,7 +212,7 @@ fn network_listener(conx_str: ~str, chan: Sender<~Event>) {
     let addr = from_str::<SocketAddr>(conx_str).expect("Address error.");
     let mut acceptor = TcpListener::bind(addr).unwrap().listen();
     println!("server <name> listening on {:}", addr);
-    
+
     for mut stream in acceptor.incoming() {
         println!("NL: DEBUG 0");
         // TODO: only handling one request at a time for now => spawn threads later?
@@ -217,7 +237,7 @@ fn network_listener(conx_str: ~str, chan: Sender<~Event>) {
             println!("NL: DEBUG 5");
         }
     }
-    
+
     println!("network listener shutting down ...");
 }
 
@@ -231,18 +251,18 @@ fn test_client(ipaddr: ~str, port: uint) {
         timer::sleep(1299);
         println!(">>> Client sending AER from 'frank' for widget count");
 
-        let addr = SocketAddr { ip: Ipv4Addr(127, 0, 0, 1), port: port as u16 };
+        let addr = from_str::<SocketAddr>(format!("{:s}:{:u}", ipaddr, port)).unwrap();        
         let mut stream = TcpStream::connect(addr);
 
         let logentry = LogEntry {
-            index: 1,
+            index: 2,
             term: 1,
-            command_name: ~"inventory.widget.count = 100",
+            command_name: ~"inventory.widget.count = 99",
             command: None,
         };
 
         let entries: Vec<LogEntry> = Vec::from_elem(1, logentry);
-        
+
         // first send AppendEntriesRequest
         let aereq = ~AppendEntriesRequest{
             term: 0,
@@ -254,18 +274,18 @@ fn test_client(ipaddr: ~str, port: uint) {
         };
 
         let json_aereq: ~str = json::Encoder::str_encode(aereq.entries.get(0));
-        
+
         let mut result = stream.write_str(json_aereq);
         if result.is_err() {
             println!("Client ERROR: {:?}", result.err());
         }
         drop(stream); // close the connection   ==> NEED THIS? ask on #rust
-        
+
 
         // then send stop request
         timer::sleep(1888);
         stream = TcpStream::connect(addr);
-        
+
         result = stream.write_str("STOP");
         if result.is_err() {
             println!("Client ERROR: {:?}", result.err());
@@ -276,7 +296,7 @@ fn test_client(ipaddr: ~str, port: uint) {
 
 
 
-fn main() {    
+fn main() {
     let name = ~"S1";
     let path = Path::new(~"datalog/S1");
     let ipaddr = ~"127.0.0.1";
@@ -285,17 +305,17 @@ fn main() {
     println!("Now starting test client");
     test_client(ipaddr.clone(), port);
 
-    
+
     let result = Server::new(name, path, ipaddr, port);
     if result.is_err() {
         error!("{:?}", result.err());
         return;
     }
-    
+
     let mut s = result.unwrap();
     match s.run() {
         Ok(_) => (),
         Err(e) => println!("ERROR: {:?}", e)
     }
-    
+
 }

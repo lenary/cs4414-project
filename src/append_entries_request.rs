@@ -1,3 +1,4 @@
+#[allow(deprecated_owned_vector)]
 extern crate serialize;
 
 use std::vec_ng::Vec;
@@ -16,12 +17,23 @@ pub struct AppendEntriesRequest {
     entries: Vec<LogEntry>,
 }
 
+// how goraft creates it
+// return newAppendEntriesResponse(s.currentTerm, false, s.log.currentIndex(), s.log.CommitIndex()), false
+
 
 pub struct AppendEntriesResponse {
-	// pb     *protobuf.AppendEntriesResponse  // FIXME: don't know what this is for in goraft
-	peer:  ~str,
-	append: bool,
+    term: u64,
+    curr_index: u64,
+    // commit_idx: u64,    // TODO: do we need this?  Not in the cheat sheet of the raft.pdf
+    success: bool,
 }
+
+// pub struct AppendEntriesResponseInfo {
+// 	// pb     *protobuf.AppendEntriesResponse  // FIXME: don't know what this is for in goraft
+// 	peer:  ~str,   // for now, do the 
+// 	append: bool,  // from go-raft: what is it for?
+//     response: AppendEntriesResponse,
+// }
 
 #[cfg(test)]
 mod test {
@@ -33,7 +45,7 @@ mod test {
         let logentry1 = LogEntry{index: 155, term: 2, command_name: ~"wc", command: None};
         let logentry2 = LogEntry{index: 156, term: 2, command_name: ~"ps -ef", command: None};
         let logentry3 = LogEntry{index: 157, term: 2, command_name: ~"nop", command: Some(~"nop")};
-        let entries = ~[logentry1, logentry2, logentry3];
+        let entries = vec!(logentry1, logentry2, logentry3);
         let apreq = super::AppendEntriesRequest{term: 66,
                                                 prev_log_idx: 13,
                                                 prev_log_term: 1,
@@ -64,7 +76,7 @@ mod test {
         assert_eq!(~"locutus", appendreq.leader_name);
         assert_eq!(1, appendreq.entries.len());
 
-        let logentry = appendreq.entries[0];
+        let logentry = appendreq.entries.get(0);
         
         assert_eq!(200, logentry.index);
         assert_eq!(4, logentry.term);

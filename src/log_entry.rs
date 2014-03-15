@@ -1,3 +1,4 @@
+#[allow(deprecated_owned_vector)]
 extern crate serialize;
 
 use serialize::{json, Decodable};

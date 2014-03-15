@@ -69,6 +69,7 @@ impl Log {
             return Err(IoError{kind: InvalidInput,
                                desc: "term violation",
                                detail: Some(errmsg)});
+
         } else if entry.term == self.curr_term && entry.index <= self.curr_idx {
             let errmsg = format!("schooner.Log: Cannot append entry with earlier index in the same term ({:u}:{:u} <= {:u}:{:u})",
                                  entry.term, entry.index,
@@ -78,7 +79,7 @@ impl Log {
                                detail: Some(errmsg)});
         }
 
-        let jstr = json::Encoder::str_encode(&entry);
+        let jstr = json::Encoder::str_encode(&entry) + "\n";
         try!(self.file.write_str(jstr));
         Ok(())
     }
