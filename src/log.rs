@@ -25,6 +25,7 @@ pub struct Log {
 }
 
 impl Log {
+    #[allow(deprecated_owned_vector)]  // TODO: remove later
     pub fn new(path: Path) -> IoResult<~Log> {
         let mut commit_idx = 0;
         let mut term = 0;

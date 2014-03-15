@@ -2,4 +2,10 @@
 * Create a task to listen on socket 23158 -> takes a Chan to put Events on (maybe just pure JSON messages for now?)
 * Peers will communicate via JSON (goraft uses protocol buffers)
 * server_loop will grab from the event Port
-* Chan is now clonable => if doesnt' work, may need to upgrade compiler (11-Mar release)
+* Chan is now clonable => if doesnt' work, may need to upgrade compiler (11)
+
+
+
+# Misc Rust Notes
+* Arc<uint> and unsafely cast a &uint to a &mut AtomicBool
+* Vec::new() is the same as ~[]

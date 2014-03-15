@@ -2,10 +2,13 @@ extern crate serialize;
 extern crate sync;
 
 use std::comm::Data;
-use std::io::{InvalidInput,IoError,IoResult};
+use std::io::{Acceptor,InvalidInput,IoError,IoResult,Listener,Timer};
+use std::io::timer;
+use std::io::net::ip::{Ipv4Addr,SocketAddr};
+use std::io::net::tcp::{TcpListener,TcpStream};
 use std::sync::atomics::{AtomicBool,AcqRel,INIT_ATOMIC_BOOL};
-    
-use sync::{SyncChan, SyncPort};
+
+
 // use std::comm::{Empty, Data, Disconnected};
 
 use log::Log;
@@ -18,7 +21,7 @@ pub mod serror;
 // static DEFAULT_HEARTBEAT_INTERVAL: uint = 50;   // in millis
 // static DEFAULT_ELECTION_TIMEOUT  : uint = 150;  // in millis
 
-static mut ab: AtomicBool = INIT_ATOMIC_BOOL;
+static mut stop: AtomicBool = INIT_ATOMIC_BOOL;
 
 /* ---[ data structures ]--- */
 
@@ -32,6 +35,8 @@ pub enum State {
 }
 
 pub struct Server {
+    ip: ~str,
+    tcpport: uint,
     name: ~str,
     path: Path,
     state: State,
@@ -40,8 +45,8 @@ pub struct Server {
 
     priv log: ~Log,  // TODO: should this just be Log (on stack => can it be copied arnd?)
 
-    c: Chan<~Event>,  // TODO: keep chan or port?
-    p: Port<~Event>,
+    c: Sender<~Event>,  // TODO: keep chan or port?
+    p: Receiver<~Event>,
     // more later
 }
 
@@ -49,16 +54,14 @@ pub struct Event {
     msg: ~str,  // bogus => just to get started
     // target: ??,
     // return_val: ??,
-    // c: Chan<SError>,   // TODO: chan or port?  // TODO: what errors?
+    // c: Sender<SError>,   // TODO: chan or port?  // TODO: what errors?
 }
 
 /* ---[ functions ]--- */
 
 impl Server {
-    pub fn new(name: ~str, logpath: Path,
-               /*transporter, */ /*statemachine,*/ /*ctx: ~T,*/
-               connection_str: ~str) -> IoResult<~Server> {
-
+    pub fn new(name: ~str, logpath: Path, ipaddr: ~str, tcpport: uint) -> IoResult<~Server> {
+        
         if name == ~"" {
             return Err(IoError{
                 kind: InvalidInput,
@@ -66,16 +69,19 @@ impl Server {
                 detail: None,
             });
         }
-        let (pt, ch): (Port<~Event>, Chan<~Event>) = Chan::new();
+        let (ch, pt): (Sender<~Event>, Receiver<~Event>) = channel();
 
         let lg = try!(Log::new(logpath.clone()));
+        let conx_str = format!("{}:{:u}", &ipaddr, tcpport);
         
         let s = ~Server {
+            ip: ipaddr,
+            tcpport: tcpport,  // TODO: could we use udp instead? are we doing our own ACKs at the app protocol level?
             name: name,
             path: logpath,
             state: Stopped,
             current_term: 0,
-            conx_str: connection_str,
+            conx_str: conx_str,  // TODO: what the hell is this for? (from goraft)
             log: lg,
             c: ch,
             p: pt,                
@@ -96,9 +102,10 @@ impl Server {
         self.state = Follower;
 
         let event_chan = self.c.clone();
+        let conx_str = self.conx_str.clone();
         spawn(proc() {
             // needs to be a separate file/impl
-            network_listener(event_chan);
+            network_listener(conx_str, event_chan);
         });
         
         self.serve_loop();
@@ -122,22 +129,43 @@ impl Server {
     }
 
     fn follower_loop(&mut self) {
-        let stopsig = unsafe{ ab.load(AcqRel) };
-        println!("follower loop; stop signal is: {:?}", stopsig);
-        match self.p.try_recv() {
-            Data(ev) => println!("event message: {}", ev.msg),
-            _ => ()
+        // let mut stopsig = unsafe{ stop.load(AcqRel) };
+        // let mut timer = Timer::new().unwrap();
+
+        loop {
+            println!("FLW: DEBUG 0");
+
+            // TODO: use select with timeout so doesn't block forever?
+            let ev = self.p.recv();
+            println!("follower: event message: {}", ev.msg);
+            println!("FLW: DEBUG 1 {:?} :: {:?}", ev.msg, is_stop_msg(ev.msg));
+
+            if is_stop_msg(ev.msg) {
+                println!("FLW: DEBUG 2");
+                unsafe{ stop.store(true, AcqRel); }
+                self.state = Stopped;
+                break;
+            }
+            println!("FLW: DEBUG 3");            
         }
-        if stopsig {
-            self.state = Stopped;
-        } else {
-            self.state = Candidate;
-        }
+        
+        // while !stopsig {
+            //     let timeout = timer.oneshot(1000);
+            //     // TODO: need a select! stmt here with a timeout channel
+            //     select! (
+            //         ev = self.p.recv() => println!("event message: {}", ev.msg),
+            //         () = timeout.recv() => {}
+            //     )
+            //     stopsig = unsafe{ stop.load(AcqRel) };            
+            //     println!("follower loop; stop signal is: {:?}", stopsig);
+            // }
     }
+
     fn candidate_loop(&mut self) {
         println!("candidate loop");
         self.state = Leader;
     }
+    
     fn leader_loop(&mut self) {
         println!("leader loop");
         self.state = Snapshotting;
@@ -149,28 +177,85 @@ impl Server {
 }
 
 
-fn network_listener(chan: Chan<~Event>) {
-    let ev = ~Event{msg: ~"hi there"};
-    chan.send(ev);
-    println!("network listener starting up ...");
-
-    std::io::timer::sleep(50);
-    let ev = ~Event{msg: ~"last msg"};
-    chan.send(ev);
-
-    unsafe{ ab.store(true, AcqRel); }
-    println!("network listener: set stop to {}", unsafe{ ab.load(AcqRel) });
+fn network_listener(conx_str: ~str, chan: Sender<~Event>) {
+    let addr = from_str::<SocketAddr>(conx_str).expect("Address error.");
+    let mut acceptor = TcpListener::bind(addr).unwrap().listen();
+    println!("server <name> listening on {:}", addr);
+    
+    for mut stream in acceptor.incoming() {
+        println!("NL: DEBUG 0");
+        // TODO: only handling one request at a time for now => spawn threads later?
+        match stream.read_to_str() {
+            Ok(input)  => {
+                if is_stop_msg(input) {
+                    println!("NL: DEBUG 1");
+                    unsafe { stop.store(true, AcqRel) }
+                }
+                let ev = ~Event{msg: input};
+                chan.send(ev);
+                println!("NL: DEBUG 2");
+            },
+            Err(ioerr) => println!("ERROR: {:?}", ioerr)
+        }
+        unsafe {
+            println!("NL: DEBUG 3: {:?}", stop.load(AcqRel));
+            if stop.load(AcqRel) {
+                println!("NL: DEBUG 4");
+                break;
+            }
+            println!("NL: DEBUG 5");
+        }
+    }
     
     println!("network listener shutting down ...");
 }
 
+fn is_stop_msg(s: &str) -> bool {
+    s == "STOP"
+}
 
-fn main() {
+
+fn test_client(ipaddr: ~str, port: uint) {
+    println!("{:?}", ipaddr);
+    println!("{:?}", port);
+
+    spawn(proc() {
+        timer::sleep(2888);
+        println!("Client sending stop message");
+
+        let addr = SocketAddr { ip: Ipv4Addr(127, 0, 0, 1), port: port as u16 };
+        let mut stream = TcpStream::connect(addr);
+        
+        let result = stream.write_str("STOP");
+        if result.is_err() {
+            println!("Client ERROR: {:?}", result.err());
+        }
+        drop(stream); // close the connection        
+    });
+}
+
+
+
+fn main() {    
     let name = ~"S1";
     let path = Path::new(~"datalog/S1");
-    let conx = ~"127.0.0.1:7007";
-    match Server::new(name, path, conx) {
-        Ok(mut s) => { s.run(); },
-        Err(e)    => { error!("{:?}", e); }
+    let ipaddr = ~"127.0.0.1";
+    let port = 23158;
+
+    println!("Now starting test client");
+    test_client(ipaddr.clone(), port);
+
+    
+    let result = Server::new(name, path, ipaddr, port);
+    if result.is_err() {
+        error!("{:?}", result.err());
+        return;
     }
+    
+    let mut s = result.unwrap();
+    match s.run() {
+        Ok(_) => (),
+        Err(e) => println!("ERROR: {:?}", e)
+    }
+    
 }
