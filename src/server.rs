@@ -1,7 +1,7 @@
 extern crate serialize;
 extern crate sync;
 
-use std::comm::Data;
+use std::comm::Select;
 use std::io::{Acceptor,InvalidInput,IoError,IoResult,Listener,Timer};
 use std::io::timer;
 use std::io::net::ip::{Ipv4Addr,SocketAddr};
@@ -130,35 +130,40 @@ impl Server {
 
     fn follower_loop(&mut self) {
         // let mut stopsig = unsafe{ stop.load(AcqRel) };
-        // let mut timer = Timer::new().unwrap();
+        let mut timer = Timer::new().unwrap();
 
         loop {
             println!("FLW: DEBUG 0");
+            let timeout = timer.oneshot(1000); // use for detecting lost leader
 
-            // TODO: use select with timeout so doesn't block forever?
-            let ev = self.p.recv();
-            println!("follower: event message: {}", ev.msg);
-            println!("FLW: DEBUG 1 {:?} :: {:?}", ev.msg, is_stop_msg(ev.msg));
-
-            if is_stop_msg(ev.msg) {
-                println!("FLW: DEBUG 2");
-                unsafe{ stop.store(true, AcqRel); }
-                self.state = Stopped;
-                break;
+            let sel = Select::new();
+            let mut pt = sel.handle(&self.p);
+            let mut timeout = sel.handle(&timeout);
+            unsafe{
+                pt.add();
+                timeout.add();
             }
-            println!("FLW: DEBUG 3");            
+            let ret = sel.wait();
+
+            if ret == timeout.id() {
+                let () = timeout.recv(); // TODO: hvae to capture output?                
+                println!("FWL: TIMEOUT!! => change state to Candidate");
+                self.state = Candidate;
+                break;
+                
+            } else if ret == pt.id() {
+                let ev = pt.recv();
+                println!("follower: event message: {}", ev.msg);
+                println!("FLW: DEBUG 1 {:?} :: {:?}", ev.msg, is_stop_msg(ev.msg));
+                if is_stop_msg(ev.msg) {
+                    println!("FLW: DEBUG 2");
+                    unsafe{ stop.store(true, AcqRel); }
+                    self.state = Stopped;
+                    break;
+                }
+                println!("FLW: DEBUG 3");            
+            }
         }
-        
-        // while !stopsig {
-            //     let timeout = timer.oneshot(1000);
-            //     // TODO: need a select! stmt here with a timeout channel
-            //     select! (
-            //         ev = self.p.recv() => println!("event message: {}", ev.msg),
-            //         () = timeout.recv() => {}
-            //     )
-            //     stopsig = unsafe{ stop.load(AcqRel) };            
-            //     println!("follower loop; stop signal is: {:?}", stopsig);
-            // }
     }
 
     fn candidate_loop(&mut self) {
@@ -220,7 +225,7 @@ fn test_client(ipaddr: ~str, port: uint) {
     println!("{:?}", port);
 
     spawn(proc() {
-        timer::sleep(2888);
+        timer::sleep(1299);
         println!("Client sending stop message");
 
         let addr = SocketAddr { ip: Ipv4Addr(127, 0, 0, 1), port: port as u16 };
