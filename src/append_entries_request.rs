@@ -1,5 +1,7 @@
 extern crate serialize;
 
+use std::vec_ng::Vec;
+
 use log_entry::LogEntry;
 
 pub mod log_entry;
@@ -10,8 +12,8 @@ pub struct AppendEntriesRequest {
     prev_log_idx: u64,
     prev_log_term: u64,
     commit_idx: u64,
-    leader_name: ~str,
-    entries: ~[LogEntry],
+    leader_name: ~str,  // TODO: change to Id of type uint?
+    entries: Vec<LogEntry>,
 }
 
 

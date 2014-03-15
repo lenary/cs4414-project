@@ -2,7 +2,7 @@ extern crate serialize;
 
 use serialize::{json, Decodable};
 
-#[deriving(Decodable, Encodable)]
+#[deriving(Decodable, Encodable, Clone)]
 pub struct LogEntry {
     index: u64,
     term: u64,

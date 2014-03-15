@@ -7,13 +7,19 @@ use std::io::timer;
 use std::io::net::ip::{Ipv4Addr,SocketAddr};
 use std::io::net::tcp::{TcpListener,TcpStream};
 use std::sync::atomics::{AtomicBool,AcqRel,INIT_ATOMIC_BOOL};
+use std::vec_ng::Vec;
+
+use serialize::json;
 
 
 // use std::comm::{Empty, Data, Disconnected};
 
+use append_entries_request::AppendEntriesRequest;
 use log::Log;
+use log_entry::LogEntry; // should probably be log::entry::LogEntry => MOVE LATER
 use serror::{InvalidArgument,InvalidState,SError};
 
+mod append_entries_request;
 mod log;
 mod log_entry;
 pub mod serror;
@@ -146,7 +152,7 @@ impl Server {
             let ret = sel.wait();
 
             if ret == timeout.id() {
-                let () = timeout.recv(); // TODO: hvae to capture output?                
+                timeout.recv();
                 println!("FWL: TIMEOUT!! => change state to Candidate");
                 self.state = Candidate;
                 break;
@@ -221,21 +227,50 @@ fn is_stop_msg(s: &str) -> bool {
 
 
 fn test_client(ipaddr: ~str, port: uint) {
-    println!("{:?}", ipaddr);
-    println!("{:?}", port);
-
     spawn(proc() {
         timer::sleep(1299);
-        println!("Client sending stop message");
+        println!(">>> Client sending AER from 'frank' for widget count");
 
         let addr = SocketAddr { ip: Ipv4Addr(127, 0, 0, 1), port: port as u16 };
         let mut stream = TcpStream::connect(addr);
+
+        let logentry = LogEntry {
+            index: 1,
+            term: 1,
+            command_name: ~"inventory.widget.count = 100",
+            command: None,
+        };
+
+        let entries: Vec<LogEntry> = Vec::from_elem(1, logentry);
         
-        let result = stream.write_str("STOP");
+        // first send AppendEntriesRequest
+        let aereq = ~AppendEntriesRequest{
+            term: 0,
+            prev_log_idx: 0,
+            prev_log_term: 0,
+            commit_idx: 0,
+            leader_name: ~"frank",
+            entries: entries,
+        };
+
+        let json_aereq: ~str = json::Encoder::str_encode(aereq.entries.get(0));
+        
+        let mut result = stream.write_str(json_aereq);
         if result.is_err() {
             println!("Client ERROR: {:?}", result.err());
         }
-        drop(stream); // close the connection        
+        drop(stream); // close the connection   ==> NEED THIS? ask on #rust
+        
+
+        // then send stop request
+        timer::sleep(1888);
+        stream = TcpStream::connect(addr);
+        
+        result = stream.write_str("STOP");
+        if result.is_err() {
+            println!("Client ERROR: {:?}", result.err());
+        }
+        drop(stream); // close the connection   ==> NEED THIS? ask on #rust
     });
 }
 
