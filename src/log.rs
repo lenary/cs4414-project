@@ -8,10 +8,10 @@ use serialize::json;
 // use sync::RWArc;
 
 use log_entry::LogEntry;
-use serror::{InvalidArgument,InvalidState,SError};
+// use serror::{InvalidArgument,InvalidState,SError};
 
-mod log_entry;
-mod serror;
+pub mod log_entry;
+// mod serror;
 
 pub struct Log {
     file: File,      // open File with Append/Write state

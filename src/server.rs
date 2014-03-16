@@ -20,9 +20,9 @@ use log::Log;
 use log_entry::LogEntry; // should probably be log::entry::LogEntry => MOVE LATER
 use serror::{InvalidArgument,InvalidState,SError};
 
-mod append_entries;
+pub mod append_entries;
 mod log;
-mod log_entry;
+pub mod log_entry;
 pub mod serror;
 
 // static DEFAULT_HEARTBEAT_INTERVAL: uint = 50;   // in millis
@@ -214,7 +214,7 @@ impl Server {
 /// where NN is an integer >= 0.
 /// Returns the length as a uint or None if the string is not
 /// of the specified format.
-/// 
+///
 fn parse_content_length(len_line: &str) -> Option<uint> {
     if ! len_line.starts_with("Length:") {
         return None;
@@ -242,7 +242,7 @@ fn read_network_msg(stream: TcpStream) -> IoResult<~str> {
     }
     let length = result.unwrap();
     println!("** CL: {:u}", length);  // TODO: remove
-    
+
     let mut buf: ~[u8] = std::vec::from_elem(length, 0u8);
     let nread = try!(reader.read(buf));
 
@@ -271,7 +271,7 @@ fn network_listener(conx_str: ~str, chan: Sender<~Event>) {
         println!("NL: DEBUG 0");
 
         let mut stream = stream.unwrap();
-        
+
         /////////////
         // TODO: only handling one request at a time for now => spawn threads later?
         match read_network_msg(stream.clone()) {
@@ -415,4 +415,160 @@ fn main() {
         Err(e) => println!("ERROR: {:?}", e)
     }
 
+}
+
+#[cfg(test)]
+mod test {
+    extern crate serialize;
+
+    use std::io;
+    use std::io::{BufferedReader,File};    
+    use std::io::fs;
+    use std::io::net::ip::SocketAddr;
+    use std::io::net::tcp::TcpStream;
+    use std::io::timer;
+    use std::vec_ng::Vec;
+
+    use serialize::json;
+
+    use append_entries::{AppendEntriesRequest};
+    use log_entry::LogEntry; // should probably be log::entry::LogEntry => MOVE LATER
+
+    // mod append_entries;
+    // mod log_entry;
+
+    static S1TEST_DIR    : &'static str = "datalog";
+    static S1TEST_PATH   : &'static str = "datalog/S1TEST";
+    static S1TEST_IPADDR : &'static str = "127.0.0.1";
+    static S1TEST_PORT   : uint         = 23158;
+
+    fn setup() -> ~super::Server {
+        let name = ~"S1TEST";
+        let dirpath = Path::new(S1TEST_DIR);
+        let filepath = Path::new(S1TEST_PATH);
+
+        if filepath.exists() {
+            let fs_res = fs::unlink(&filepath);
+            assert!(fs_res.is_ok());
+        }
+        if ! dirpath.exists() {
+            let fs_res = fs::mkdir(&dirpath, io::UserRWX);
+            assert!(fs_res.is_ok());
+        }
+
+        let result = super::Server::new(name, filepath, S1TEST_IPADDR.to_owned(), S1TEST_PORT);
+        if result.is_err() {
+            fail!("{:?}", result.err());
+        }
+        return result.unwrap();
+    }
+
+    fn signal_shutdown() {
+        let addr = from_str::<SocketAddr>(format!("{:s}:{:u}", S1TEST_IPADDR, S1TEST_PORT)).unwrap();
+        let mut stream = TcpStream::connect(addr);
+
+        let stop_msg = format!("Length: {:u}\n{:s}", "STOP".len(), "STOP");  // TODO: make "STOP" a static constant
+        let result = stream.write_str(stop_msg);
+        if result.is_err() {
+            fail!("Client ERROR: {:?}", result.err());
+        }
+        drop(stream); // close the connection   ==> NEED THIS? ask on #rust
+    }
+
+    fn tear_down() {
+        let filepath = Path::new(S1TEST_PATH);
+        let _ = fs::unlink(&filepath);
+    }
+        
+    fn launch_server() -> SocketAddr {
+        spawn(proc() {
+            let mut server = setup();
+            match server.run() {
+                Ok(_) => (),
+                Err(e) => fail!("ERROR: {:?}", e)
+            }
+        });
+        timer::sleep(800); // FIXME this is unstable => how fix?
+        from_str::<SocketAddr>(format!("{:s}:{:u}", S1TEST_IPADDR.to_owned(), S1TEST_PORT)).unwrap()
+    }
+
+    #[test]
+    fn test_follower_with_single_AppendEntryRequest() {
+        // launch server => this will not shutdown until a STOP signal is sent
+        let addr = launch_server();
+
+        let mut stream = TcpStream::connect(addr);
+
+        /* ---[ prepare and send request ]--- */
+        let logentry1 = LogEntry {
+            index: 1,
+            term: 1,
+            command_name: ~"inventory.widget.count = 100",
+            command: None,
+        };
+
+        let entries: Vec<LogEntry> = vec!(logentry1.clone());
+        let aereq = ~AppendEntriesRequest{
+            term: 0,
+            prev_log_idx: 0,
+            prev_log_term: 0,
+            commit_idx: 0,
+            leader_name: ~"S100TEST",  // TODO: make static
+            entries: entries,
+        };
+
+        let json_aereq = json::Encoder::str_encode(aereq);
+        let req_msg = format!("Length: {:u}\n{:s}", json_aereq.len(), json_aereq);
+
+        let result = stream.write_str(req_msg);
+        if result.is_err() {
+            println!("Client ERROR: {:?}", result.err());
+        }
+        let _ = stream.flush();
+
+
+        /* ---[ read response and signal server to shut down ]--- */
+        
+        let result2 = stream.read_to_str();
+        drop(stream); // close the connection   ==> NEED THIS? ask on #rust
+        signal_shutdown();  // TODO: is there a better way to ensure a fn is called if an assert fails?
+
+        /* ---[ validate results ]--- */
+
+        // validate response
+        
+        assert!(result2.is_ok());
+        let resp = result2.unwrap();
+        println!("{:?}", resp);
+
+        assert!(resp.contains("\"success\":true"));
+        let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
+        assert_eq!(1, aeresp.term);
+        assert_eq!(1, aeresp.curr_idx);
+        assert_eq!(true, aeresp.success);
+
+        // validate that response was written to disk
+        let filepath = Path::new(S1TEST_PATH);
+        assert!(filepath.exists());
+
+        // read in first entry and make sure it matches the logentry sent in the AEReq
+        let mut br = BufferedReader::new(File::open(&filepath));
+        let mut readres = br.read_line();
+        assert!(readres.is_ok());
+        
+        let line = readres.unwrap().trim().to_owned();
+        let exp_str = json::Encoder::str_encode(&logentry1);
+        assert_eq!(exp_str, line);
+
+        // should only be one entry in the file
+        readres = br.read_line();
+        assert!(readres.is_err());
+        
+        tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
+    }
+
+    #[test]
+    fn test_follower_with_same_AppendEntryRequest_twice_should_return_false_2nd_time() {
+        assert!(true);
+    }
 }
