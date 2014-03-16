@@ -3,13 +3,13 @@ extern crate serialize;
 
 use std::io::{BufferedReader,File,IoResult,IoError,InvalidInput,EndOfFile,Append,Write};
 use std::vec;
+use std::vec_ng::Vec;
 use serialize::json;
 // use sync::RWArc;
 
 use log_entry::LogEntry;
 use serror::{InvalidArgument,InvalidState,SError};
 
-mod append_entries_request;
 mod log_entry;
 mod serror;
 
@@ -49,7 +49,7 @@ impl Log {
             path: path,
             entries: vec::with_capacity(8),  // necessary?
             commit_idx: commit_idx,
-            start_idx: commit_idx,  // TODO: double check this logic
+            start_idx: commit_idx,  // TODO: double check this logic => this isn't being handled correclty yet
             curr_idx: commit_idx,
             start_term: term,
             curr_term: term
@@ -58,6 +58,16 @@ impl Log {
         return Ok(lg);
     }
 
+    ///
+    /// Writes multiple log entry to the end of the log. 
+    /// 
+    pub fn append_entries(&mut self, entries: Vec<LogEntry>) -> IoResult<()> {
+        for e in entries.move_iter() {
+            try!(self.append_entry(e));
+        }
+        Ok(())
+    }
+    
     ///
     /// Writes a single log entry to the end of the log. 
     /// 
@@ -81,6 +91,8 @@ impl Log {
 
         let jstr = json::Encoder::str_encode(&entry) + "\n";
         try!(self.file.write_str(jstr));
+        self.curr_idx = entry.index;
+        self.curr_term = entry.term;
         Ok(())
     }
 }

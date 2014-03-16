@@ -2,10 +2,11 @@ extern crate serialize;
 extern crate sync;
 
 use std::comm::Select;
-use std::io::{Acceptor,InvalidInput,IoError,IoResult,Listener,Timer};
+use std::io::{Acceptor,BufferedReader,InvalidInput,IoError,IoResult,Listener,Timer};
 use std::io::timer;
 use std::io::net::ip::{Ipv4Addr,SocketAddr};
 use std::io::net::tcp::{TcpListener,TcpStream};
+use std::str;
 use std::sync::atomics::{AtomicBool,AcqRel,INIT_ATOMIC_BOOL};
 use std::vec_ng::Vec;
 
@@ -14,18 +15,19 @@ use serialize::json;
 
 // use std::comm::{Empty, Data, Disconnected};
 
-use append_entries_request::{AppendEntriesRequest,AppendEntriesResponse};
+use append_entries::{AppendEntriesRequest,AppendEntriesResponse};
 use log::Log;
 use log_entry::LogEntry; // should probably be log::entry::LogEntry => MOVE LATER
 use serror::{InvalidArgument,InvalidState,SError};
 
-mod append_entries_request;
+mod append_entries;
 mod log;
 mod log_entry;
 pub mod serror;
 
 // static DEFAULT_HEARTBEAT_INTERVAL: uint = 50;   // in millis
 // static DEFAULT_ELECTION_TIMEOUT  : uint = 150;  // in millis
+static STOP_MSG: &'static str = "STOP";
 
 static mut stop: AtomicBool = INIT_ATOMIC_BOOL;
 
@@ -57,10 +59,10 @@ pub struct Server {
 }
 
 pub struct Event {
-    msg: ~str,  // bogus => just to get started
+    msg: ~str,  // just to get started
     // target: ??,
     // return_val: ??,
-    // c: Sender<SError>,   // TODO: chan or port?  // TODO: what errors?
+    ch: Sender<~str>,
 }
 
 /* ---[ functions ]--- */
@@ -135,7 +137,6 @@ impl Server {
     }
 
     fn follower_loop(&mut self) {
-        // let mut stopsig = unsafe{ stop.load(AcqRel) };
         let mut timer = Timer::new().unwrap();
 
         loop {
@@ -167,25 +168,25 @@ impl Server {
                     break;
 
                 } else {
-                    let result = log_entry::decode_log_entry(ev.msg);
+                    let result = append_entries::decode_append_entries_request(ev.msg);
                     if result.is_err() {
-                        fail!("ERROR: Unable to decode msg into log_entry: {:?}.\nError is: {:?}", ev.msg, result.err());
+                        fail!("ERROR: Unable to decode msg into append_entry_request: {:?}.\nError is: {:?}", ev.msg, result.err());
                     }
-                    let logentry = result.unwrap();
-                    let mut aeresp = AppendEntriesResponse{term: self.log.curr_term,
-                                                           curr_index: self.log.curr_idx,
-                                                           success: true};
+                    let aereq = result.unwrap();
 
-                    match self.log.append_entry(logentry) {
-                        Ok(_) => {
-                            println!("FWL: would now ACK TRUE back to sender (leader) with: {:?}", aeresp);
-                        },
+                    let aeresp = match self.log.append_entries(aereq.entries) {
+                        Ok(_)  => AppendEntriesResponse{term: self.log.curr_term,
+                                                        curr_idx: self.log.curr_idx,
+                                                        success: true},
                         Err(e) => {
-                            aeresp.success = false;
                             error!("{:?}", e);
-                            println!("FWL: would now ACK FALSE back to sender (leader) with: {:?}", aeresp);
+                            AppendEntriesResponse{term: self.log.curr_term,
+                                                  curr_idx: self.log.curr_idx,
+                                                  success: false}
                         }
-                    }
+                    };
+                    let jstr = json::Encoder::str_encode(&aeresp);
+                    ev.ch.send(jstr);
                 }
                 println!("FLW: DEBUG 3");
             }
@@ -207,26 +208,95 @@ impl Server {
     }
 }
 
+///
+/// Expects content-length string of format
+///   `Length: NN`
+/// where NN is an integer >= 0.
+/// Returns the length as a uint or None if the string is not
+/// of the specified format.
+/// 
+fn parse_content_length(len_line: &str) -> Option<uint> {
+    if ! len_line.starts_with("Length:") {
+        return None;
+    }
+
+    let parts: Vec<&str> = len_line.split(':').collect();
+    if parts.len() != 2 {
+        return None;
+    }
+
+    let lenstr = parts.get(1).trim();
+    from_str::<uint>(lenstr)
+}
+
+fn read_network_msg(stream: TcpStream) -> IoResult<~str> {
+    let mut reader = BufferedReader::new(stream);
+
+    let length_hdr = try!(reader.read_line());
+    let result = parse_content_length(length_hdr);
+    if result.is_none() {
+        return Err(IoError{kind: InvalidInput,
+                           desc: "Length not parsable in network message",
+                           detail: Some(format!("length line parsed: {:s}", length_hdr))
+                          });
+    }
+    let length = result.unwrap();
+    println!("** CL: {:u}", length);  // TODO: remove
+    
+    let mut buf: ~[u8] = std::vec::from_elem(length, 0u8);
+    let nread = try!(reader.read(buf));
+
+    if nread != length {
+        return Err(IoError{kind: InvalidInput,
+                           desc: "Network message read of specified bytes failed",
+                           detail: Some(format!("Expected {} bytes, but read {} bytes", length, nread))});
+    }
+
+    match str::from_utf8(buf) {
+        Some(s) => Ok(s.to_owned()),
+        None    => Err(IoError{kind: InvalidInput,
+                               desc: "Conversion of Network message from bytes to str failed",
+                               detail: None})
+    }
+}
 
 fn network_listener(conx_str: ~str, chan: Sender<~Event>) {
     let addr = from_str::<SocketAddr>(conx_str).expect("Address error.");
     let mut acceptor = TcpListener::bind(addr).unwrap().listen();
     println!("server <name> listening on {:}", addr);
 
-    for mut stream in acceptor.incoming() {
+    let (chsend, chrecv): (Sender<~str>, Receiver<~str>) = channel();
+
+    for stream in acceptor.incoming() {
         println!("NL: DEBUG 0");
+
+        let mut stream = stream.unwrap();
+        
+        /////////////
         // TODO: only handling one request at a time for now => spawn threads later?
-        match stream.read_to_str() {
+        match read_network_msg(stream.clone()) {
             Ok(input)  => {
-                if is_stop_msg(input) {
-                    println!("NL: DEBUG 1");
-                    unsafe { stop.store(true, AcqRel) }
-                }
-                let ev = ~Event{msg: input};
+                let ev = ~Event{msg: input.clone(), ch: chsend.clone()};
                 chan.send(ev);
-                println!("NL: DEBUG 2");
+
+                if is_stop_msg(input) {
+                    println!("NL: DEBUG 1: was stop msg");
+                    unsafe { stop.store(true, AcqRel) }
+
+                } else {
+                    println!("NL: sent Event to event-loop; now waiting on response");
+
+                    let resp = chrecv.recv();
+                    println!("NL: sending response: {:?}", resp);
+                    let result = stream.write_str(resp);
+                    if result.is_err() {
+                        error!("ERROR: Unable to respond to sender over network: {:?}", result.err());
+                    }
+                    let _ = stream.flush();
+                }
+                println!("NL: DEBUG 2b");
             },
-            Err(ioerr) => println!("ERROR: {:?}", ioerr)
+            Err(ioerr) => error!("ERROR: {:?}", ioerr)
         }
         unsafe {
             println!("NL: DEBUG 3: {:?}", stop.load(AcqRel));
@@ -241,27 +311,42 @@ fn network_listener(conx_str: ~str, chan: Sender<~Event>) {
     println!("network listener shutting down ...");
 }
 
+
 fn is_stop_msg(s: &str) -> bool {
-    s == "STOP"
+    s == STOP_MSG
 }
 
 
+// this needs to go into test mod
 fn test_client(ipaddr: ~str, port: uint) {
     spawn(proc() {
         timer::sleep(1299);
         println!(">>> Client sending AER from 'frank' for widget count");
 
-        let addr = from_str::<SocketAddr>(format!("{:s}:{:u}", ipaddr, port)).unwrap();        
+        let addr = from_str::<SocketAddr>(format!("{:s}:{:u}", ipaddr, port)).unwrap();
         let mut stream = TcpStream::connect(addr);
 
-        let logentry = LogEntry {
-            index: 2,
+        let logentry1 = LogEntry {
+            index: 17,
             term: 1,
-            command_name: ~"inventory.widget.count = 99",
+            command_name: ~"inventory.widget.count = 84",
             command: None,
         };
+        let logentry2 = LogEntry {
+            index: 18,
+            term: 1,
+            command_name: ~"inventory.widget.count = 83",
+            command: None,
+        };
+        // let logentry3 = LogEntry {
+        //     index: 16,
+        //     term: 1,
+        //     command_name: ~"inventory.widget.count = 85",
+        //     command: None,
+        // };
 
-        let entries: Vec<LogEntry> = Vec::from_elem(1, logentry);
+        let entries: Vec<LogEntry> = vec!(logentry1, logentry2/*, logentry3*/);
+        println!(">>> SIZE {}", entries.len());
 
         // first send AppendEntriesRequest
         let aereq = ~AppendEntriesRequest{
@@ -273,20 +358,32 @@ fn test_client(ipaddr: ~str, port: uint) {
             entries: entries,
         };
 
-        let json_aereq: ~str = json::Encoder::str_encode(aereq.entries.get(0));
-
-        let mut result = stream.write_str(json_aereq);
+        let json_aereq = json::Encoder::str_encode(aereq);
+        let req_msg = format!("Length: {:u}\n{:s}", json_aereq.len(), json_aereq);
+        let mut result = stream.write_str(req_msg);
         if result.is_err() {
             println!("Client ERROR: {:?}", result.err());
         }
+        let _ = stream.flush();
+        println!(">>>> Client: message sent to server >> wiating for RESPONSE!");
+
+        // TODO: messages sent will need to include some "EOF" marker => either size or a sentinel "DONE" marker
+
+        match stream.read_to_str() {
+            Ok(resp) => println!("vvvvvv Server response to client: {:?}", resp),
+            Err(e)   => println!("vvvvvvvServer response error in client {:?}", e)
+        }
+
         drop(stream); // close the connection   ==> NEED THIS? ask on #rust
 
 
         // then send stop request
-        timer::sleep(1888);
+        timer::sleep(2222);
+        println!(">>> Client sending STOP client");
         stream = TcpStream::connect(addr);
 
-        result = stream.write_str("STOP");
+        let stop_msg = format!("Length: {:u}\n{:s}", "STOP".len(), "STOP");  // TODO: make "STOP" a static constant
+        result = stream.write_str(stop_msg);
         if result.is_err() {
             println!("Client ERROR: {:?}", result.err());
         }

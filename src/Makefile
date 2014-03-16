@@ -16,7 +16,7 @@ logentry-check:
 	rustc --crate-type=lib log_entry.rs
 
 appendentries-check:
-	rustc --crate-type=lib append_entries_request.rs
+	rustc --crate-type=lib append_entries.rs
 
 
 # ---[ tests ]--- #
@@ -31,8 +31,8 @@ logentry-test:
 	./log_entry
 
 appendentries-test:
-	rustc --test append_entries_request.rs
-	./append_entries_request
+	rustc --test append_entries.rs
+	./append_entries
 
 server-test:
 	rustc --test server.rs
