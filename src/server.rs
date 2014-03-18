@@ -180,8 +180,7 @@ impl Server {
                                                         curr_idx: self.log.curr_idx,
                                                         success: true},
                         Err(e) => {
-                            println!("{:?}", e);
-                            // error!("{:?}", e);
+                            error!("{:?}", e);
                             AppendEntriesResponse{term: self.log.curr_term,
                                                   curr_idx: self.log.curr_idx,
                                                   success: false}
@@ -291,15 +290,13 @@ fn network_listener(conx_str: ~str, chan: Sender<~Event>) {
                     println!("NL: sending response: {:?}", resp);
                     let result = stream.write_str(resp);
                     if result.is_err() {
-                        println!("ERROR: Unable to respond to sender over network: {:?}", result.err());
-                        // error!("ERROR: Unable to respond to sender over network: {:?}", result.err());
+                        error!("ERROR: Unable to respond to sender over network: {:?}", result.err());
                     }
                     let _ = stream.flush();
                 }
                 println!("NL: DEBUG 2b");
             },
-            Err(ioerr) => println!("ERROR: {:?}", ioerr)
-            // Err(ioerr) => error!("ERROR: {:?}", ioerr)
+            Err(ioerr) => error!("ERROR: {:?}", ioerr)
         }
         unsafe {
             println!("NL: DEBUG 3: {:?}", stop.load(AcqRel));
@@ -408,8 +405,7 @@ fn main() {
 
     let result = Server::new(name, path, ipaddr, port);
     if result.is_err() {
-        println!("{:?}", result.err());
-        // error!("{:?}", result.err());
+        error!("{:?}", result.err());
         return;
     }
 
