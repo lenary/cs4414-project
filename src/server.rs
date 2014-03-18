@@ -1,3 +1,5 @@
+#[feature(phase)];
+#[phase(syntax, link)] extern crate log;
 extern crate serialize;
 extern crate sync;
 
@@ -15,15 +17,14 @@ use serialize::json;
 
 // use std::comm::{Empty, Data, Disconnected};
 
-use append_entries::{AppendEntriesRequest,AppendEntriesResponse};
-use log::Log;
-use log_entry::LogEntry; // should probably be log::entry::LogEntry => MOVE LATER
+use schooner::append_entries;
+use schooner::append_entries::{AppendEntriesRequest,AppendEntriesResponse};
+use schooner::log::Log;
+use schooner::log_entry::LogEntry; // should probably be log::entry::LogEntry => MOVE LATER
 use serror::{InvalidArgument,InvalidState,SError};
 
-pub mod append_entries;
-mod log;
-pub mod log_entry;
-pub mod serror;
+pub mod schooner;
+pub mod serror;  // TODO: move to schooner dir
 
 // static DEFAULT_HEARTBEAT_INTERVAL: uint = 50;   // in millis
 // static DEFAULT_ELECTION_TIMEOUT  : uint = 150;  // in millis
@@ -179,7 +180,8 @@ impl Server {
                                                         curr_idx: self.log.curr_idx,
                                                         success: true},
                         Err(e) => {
-                            error!("{:?}", e);
+                            println!("{:?}", e);
+                            // error!("{:?}", e);
                             AppendEntriesResponse{term: self.log.curr_term,
                                                   curr_idx: self.log.curr_idx,
                                                   success: false}
@@ -272,7 +274,6 @@ fn network_listener(conx_str: ~str, chan: Sender<~Event>) {
 
         let mut stream = stream.unwrap();
 
-        /////////////
         // TODO: only handling one request at a time for now => spawn threads later?
         match read_network_msg(stream.clone()) {
             Ok(input)  => {
@@ -290,13 +291,15 @@ fn network_listener(conx_str: ~str, chan: Sender<~Event>) {
                     println!("NL: sending response: {:?}", resp);
                     let result = stream.write_str(resp);
                     if result.is_err() {
-                        error!("ERROR: Unable to respond to sender over network: {:?}", result.err());
+                        println!("ERROR: Unable to respond to sender over network: {:?}", result.err());
+                        // error!("ERROR: Unable to respond to sender over network: {:?}", result.err());
                     }
                     let _ = stream.flush();
                 }
                 println!("NL: DEBUG 2b");
             },
-            Err(ioerr) => error!("ERROR: {:?}", ioerr)
+            Err(ioerr) => println!("ERROR: {:?}", ioerr)
+            // Err(ioerr) => error!("ERROR: {:?}", ioerr)
         }
         unsafe {
             println!("NL: DEBUG 3: {:?}", stop.load(AcqRel));
@@ -405,7 +408,8 @@ fn main() {
 
     let result = Server::new(name, path, ipaddr, port);
     if result.is_err() {
-        error!("{:?}", result.err());
+        println!("{:?}", result.err());
+        // error!("{:?}", result.err());
         return;
     }
 
@@ -431,8 +435,8 @@ mod test {
 
     use serialize::json;
 
-    use append_entries::{AppendEntriesRequest};
-    use log_entry::LogEntry; // should probably be log::entry::LogEntry => MOVE LATER
+    use schooner::append_entries::{AppendEntriesRequest};
+    use schooner::log_entry::LogEntry; // should probably be log::entry::LogEntry => MOVE LATER
 
     // mod append_entries;
     // mod log_entry;

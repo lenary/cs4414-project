@@ -7,7 +7,7 @@ use std::vec_ng::Vec;
 use serialize::json;
 // use sync::RWArc;
 
-use log_entry::LogEntry;
+use schooner::log_entry::LogEntry;
 // use serror::{InvalidArgument,InvalidState,SError};
 
 pub mod log_entry;

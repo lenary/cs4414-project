@@ -4,7 +4,7 @@ extern crate serialize;
 use std::vec_ng::Vec;
 use serialize::{json, Decodable};
 
-use log_entry::LogEntry;
+use schooner::log_entry::LogEntry;
 pub mod log_entry;
 
 #[deriving(Decodable, Encodable, Clone)]
@@ -61,7 +61,7 @@ pub fn decode_append_entries_response(json_str: &str) -> Result<AppendEntriesRes
 #[cfg(test)]
 mod test {
     use serialize::{json, Decodable};
-    use log_entry::LogEntry;
+    use schooner::log_entry::LogEntry;
 
     #[test]
     fn test_json_encode_of_AppendEntriesResponse() {
