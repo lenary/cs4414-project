@@ -422,12 +422,13 @@ mod test {
     extern crate serialize;
 
     use std::io;
-    use std::io::{BufferedReader,File};    
+    use std::io::{BufferedReader,File,IoResult};
     use std::io::fs;
     use std::io::net::ip::SocketAddr;
     use std::io::net::tcp::TcpStream;
     use std::io::timer;
     use std::vec_ng::Vec;
+    use std::sync::atomics::AcqRel;
 
     use serialize::json;
 
@@ -443,6 +444,8 @@ mod test {
     static S1TEST_PORT   : uint         = 23158;
 
     fn setup() -> ~super::Server {
+        unsafe { super::stop.store(false, AcqRel); }
+
         let name = ~"S1TEST";
         let dirpath = Path::new(S1TEST_DIR);
         let filepath = Path::new(S1TEST_PATH);
@@ -473,32 +476,71 @@ mod test {
             fail!("Client ERROR: {:?}", result.err());
         }
         drop(stream); // close the connection   ==> NEED THIS? ask on #rust
+        timer::sleep(110);
     }
 
     fn tear_down() {
         let filepath = Path::new(S1TEST_PATH);
         let _ = fs::unlink(&filepath);
     }
-        
+
     fn launch_server() -> SocketAddr {
         spawn(proc() {
             let mut server = setup();
             match server.run() {
                 Ok(_) => (),
-                Err(e) => fail!("ERROR: {:?}", e)
+                Err(e) => fail!("launch_server: ERROR: {:?}", e)
             }
         });
-        timer::sleep(800); // FIXME this is unstable => how fix?
+        timer::sleep(750); // FIXME this is unstable => how fix?
         from_str::<SocketAddr>(format!("{:s}:{:u}", S1TEST_IPADDR.to_owned(), S1TEST_PORT)).unwrap()
     }
 
-    #[test]
-    fn test_follower_with_single_AppendEntryRequest() {
-        // launch server => this will not shutdown until a STOP signal is sent
-        let addr = launch_server();
+    ///
+    /// The number of entries in idx_vec and term_vec determines the # of logentries to send to
+    /// the server. The len of the two vectors must be the same.
+    ///
+    fn send_aereqs(stream: &mut IoResult<TcpStream>, idx_vec: Vec<u64>, term_vec: Vec<u64>) -> Vec<LogEntry> {
+        if idx_vec.len() != term_vec.len() {
+            fail!("send_reqs: size of vectors doesn't match: idx_vec: {}; term_vec: {}", idx_vec.len(), term_vec.len());
+        }
 
-        let mut stream = TcpStream::connect(addr);
+        let mut entries = Vec::with_capacity(term_vec.len());
+        let mut it = idx_vec.iter().zip(term_vec.iter());
 
+        for (idx, term) in it {
+            let entry = LogEntry {
+                index: *idx,
+                term: *term,
+                command_name: format!("inventory.widget.count = {}", 100 - *idx as u64),
+                command: None,
+            };
+
+            entries.push(entry);
+        }
+
+        let aereq = ~AppendEntriesRequest{
+            term: *term_vec.get( term_vec.len() - 1 ),
+            prev_log_idx: 0,  // TODO: need to handle these other fields
+            prev_log_term: 0,
+            commit_idx: 0,
+            leader_name: ~"S100TEST",  // TODO: make static
+            entries: entries.clone(),
+        };
+
+        let json_aereq = json::Encoder::str_encode(aereq);
+        let req_msg = format!("Length: {:u}\n{:s}", json_aereq.len(), json_aereq);
+
+        let result = stream.write_str(req_msg);
+        if result.is_err() {
+            println!("Client ERROR: {:?}", result.err());
+        }
+        let _ = stream.flush();
+
+        entries
+    }
+
+    fn send_aereq1(stream: &mut IoResult<TcpStream>) -> LogEntry {
         /* ---[ prepare and send request ]--- */
         let logentry1 = LogEntry {
             index: 1,
@@ -520,25 +562,35 @@ mod test {
         let json_aereq = json::Encoder::str_encode(aereq);
         let req_msg = format!("Length: {:u}\n{:s}", json_aereq.len(), json_aereq);
 
+        ////
         let result = stream.write_str(req_msg);
         if result.is_err() {
             println!("Client ERROR: {:?}", result.err());
         }
         let _ = stream.flush();
+        logentry1
+    }
 
+    #[test]
+    fn test_follower_with_single_AppendEntryRequest() {
+        // launch server => this will not shutdown until a STOP signal is sent
+        let addr = launch_server();
+        let mut stream = TcpStream::connect(addr);
+        let logentry1 = send_aereq1(&mut stream);
 
         /* ---[ read response and signal server to shut down ]--- */
-        
-        let result2 = stream.read_to_str();
-        drop(stream); // close the connection   ==> NEED THIS? ask on #rust
+
+        let result1 = stream.read_to_str();
+        drop(stream); // close the connection
+
         signal_shutdown();  // TODO: is there a better way to ensure a fn is called if an assert fails?
 
         /* ---[ validate results ]--- */
 
         // validate response
-        
-        assert!(result2.is_ok());
-        let resp = result2.unwrap();
+
+        assert!(result1.is_ok());
+        let resp = result1.unwrap();
         println!("{:?}", resp);
 
         assert!(resp.contains("\"success\":true"));
@@ -555,7 +607,7 @@ mod test {
         let mut br = BufferedReader::new(File::open(&filepath));
         let mut readres = br.read_line();
         assert!(readres.is_ok());
-        
+
         let line = readres.unwrap().trim().to_owned();
         let exp_str = json::Encoder::str_encode(&logentry1);
         assert_eq!(exp_str, line);
@@ -563,12 +615,180 @@ mod test {
         // should only be one entry in the file
         readres = br.read_line();
         assert!(readres.is_err());
-        
+
         tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
     }
 
     #[test]
     fn test_follower_with_same_AppendEntryRequest_twice_should_return_false_2nd_time() {
-        assert!(true);
+        // launch server => this will not shutdown until a STOP signal is sent
+        let addr = launch_server();
+        let mut stream = TcpStream::connect(addr);
+
+        /* ---[ send logentry1 (term1) ]--- */
+
+        let logentry1 = send_aereq1(&mut stream);
+        let result1 = stream.read_to_str();
+        drop(stream); // close the connection
+
+
+        /* ---[ send logentry1 again (term1) ]--- */
+
+        stream = TcpStream::connect(addr);
+        let _ = send_aereq1(&mut stream);
+        let result2 = stream.read_to_str();
+        drop(stream); // close the connection
+
+
+        signal_shutdown();  // TODO: is there a better way to ensure a fn is called if an assert fails?
+
+        /* ---[ validate results ]--- */
+
+        // validate response => result 1 should be success = true
+
+        assert!(result1.is_ok());
+        let resp = result1.unwrap();
+
+        assert!(resp.contains("\"success\":true"));
+        let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
+        assert_eq!(1, aeresp.term);
+        assert_eq!(1, aeresp.curr_idx);
+        assert_eq!(true, aeresp.success);
+
+
+        // result 2 should be success = false
+
+        assert!(result2.is_ok());
+        let resp2 = result2.unwrap();
+
+        assert!(resp2.contains("\"success\":false"));
+        let aeresp2 = super::append_entries::decode_append_entries_response(resp).unwrap();
+        assert_eq!(1, aeresp2.term);
+        assert_eq!(1, aeresp2.curr_idx);
+        assert_eq!(true, aeresp2.success);
+
+
+        // validate that response was written to disk
+        let filepath = Path::new(S1TEST_PATH);
+        assert!(filepath.exists());
+
+        // read in first entry and make sure it matches the logentry sent in the AEReq
+        let mut br = BufferedReader::new(File::open(&filepath));
+        let mut readres = br.read_line();
+        assert!(readres.is_ok());
+
+        let line = readres.unwrap().trim().to_owned();
+        let exp_str = json::Encoder::str_encode(&logentry1);
+        assert_eq!(exp_str, line);
+
+        // should only be one entry in the file
+        readres = br.read_line();
+        assert!(readres.is_err());
+
+        tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
     }
+
+    #[test]
+    fn test_follower_with_multiple_valid_AppendEntryRequests() {
+        // launch server => this will not shutdown until a STOP signal is sent
+        let addr = launch_server();
+        let mut stream = TcpStream::connect(addr);
+        let terms: Vec<u64> = vec!(1, 1, 1, 1);
+        let indexes: Vec<u64> = vec!(1, 2, 3, 4);
+        let logentries: Vec<LogEntry> = send_aereqs(&mut stream, indexes, terms);
+
+        /* ---[ read response and signal server to shut down ]--- */
+
+        let result1 = stream.read_to_str();
+        drop(stream); // close the connection   ==> NEED THIS? ask on #rust
+
+        signal_shutdown();  // TODO: is there a better way to ensure a fn is called if an assert fails?
+
+        /* ---[ validate ]--- */
+        assert_eq!(4, logentries.len());
+
+        assert!(result1.is_ok());
+        let resp = result1.unwrap();
+
+        assert!(resp.contains("\"success\":true"));
+        let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
+        assert_eq!(1, aeresp.term);
+        assert_eq!(4, aeresp.curr_idx);
+        assert_eq!(true, aeresp.success);
+
+        tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
+    }
+
+    #[test]
+    fn test_follower_with_AppendEntryRequests_with_invalid_term() {
+        // launch server => this will not shutdown until a STOP signal is sent
+        let addr = launch_server();
+        let mut stream = TcpStream::connect(addr);
+
+        /* ---[ AER 1, valid, initial ]--- */
+        let mut terms: Vec<u64> = vec!(1);
+        let mut indexes: Vec<u64> = vec!(1);
+        let logentries1: Vec<LogEntry> = send_aereqs(&mut stream, indexes, terms);
+        let result1 = stream.read_to_str();
+        drop(stream); // close the connection
+
+
+        /* ---[ AER 2: valid, term increment ]--- */
+        stream = TcpStream::connect(addr);
+        terms = vec!(2, 2);
+        indexes = vec!(2, 3);
+        let logentries2: Vec<LogEntry> = send_aereqs(&mut stream, indexes, terms);
+        let result2 = stream.read_to_str();
+        drop(stream); // close the connection
+
+
+        /* ---[ AER 3: invalid, term in past ]--- */
+        stream = TcpStream::connect(addr);
+        terms = vec!(1);
+        indexes = vec!(4);
+        let logentries3: Vec<LogEntry> = send_aereqs(&mut stream, indexes, terms);
+        let result3 = stream.read_to_str();
+        drop(stream); // close the connection
+
+        signal_shutdown();  // TODO: is there a better way to ensure a fn is called if an assert fails?
+
+        /* ---[ validate ]--- */
+
+        assert_eq!(1, logentries1.len());
+        assert_eq!(2, logentries2.len());
+        assert_eq!(1, logentries3.len());
+
+        // result 1
+        assert!(result1.is_ok());
+        let resp = result1.unwrap();
+
+        assert!(resp.contains("\"success\":true"));
+        let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
+        assert_eq!(1, aeresp.term);
+        assert_eq!(1, aeresp.curr_idx);
+        assert_eq!(true, aeresp.success);
+
+        // result 2
+        assert!(result2.is_ok());
+        let resp = result2.unwrap();
+
+        assert!(resp.contains("\"success\":true"));
+        let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
+        assert_eq!(2, aeresp.term);
+        assert_eq!(3, aeresp.curr_idx);
+        assert_eq!(true, aeresp.success);
+
+        // result 3
+        assert!(result3.is_ok());
+        let resp = result3.unwrap();
+
+        assert!(resp.contains("\"success\":false"));
+        let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
+        assert_eq!(2, aeresp.term);
+        assert_eq!(3, aeresp.curr_idx);
+        assert_eq!(false, aeresp.success);
+
+        tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
+    }
+
 }
