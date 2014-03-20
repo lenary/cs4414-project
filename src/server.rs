@@ -107,7 +107,7 @@ impl Server {
             return Err(InvalidState(~"schooner.Server: Server already running"));
         }
 
-        self.current_term = self.log.curr_term;
+        self.current_term = self.log.start_term;
         self.state = Follower;
 
         let event_chan = self.c.clone();
@@ -175,14 +175,14 @@ impl Server {
                     }
                     let aereq = result.unwrap();
 
-                    let aeresp = match self.log.append_entries(aereq.entries) {
-                        Ok(_)  => AppendEntriesResponse{term: self.log.curr_term,
-                                                        curr_idx: self.log.curr_idx,
+                    let aeresp = match self.log.append_entries(&aereq) {
+                        Ok(_)  => AppendEntriesResponse{term: self.log.start_term,
+                                                        curr_idx: self.log.start_idx,
                                                         success: true},
                         Err(e) => {
                             error!("{:?}", e);
-                            AppendEntriesResponse{term: self.log.curr_term,
-                                                  curr_idx: self.log.curr_idx,
+                            AppendEntriesResponse{term: self.log.start_term,
+                                                  curr_idx: self.log.start_idx,
                                                   success: false}
                         }
                     };
@@ -317,91 +317,11 @@ fn is_stop_msg(s: &str) -> bool {
 }
 
 
-// this needs to go into test mod
-fn test_client(ipaddr: ~str, port: uint) {
-    spawn(proc() {
-        timer::sleep(1299);
-        println!(">>> Client sending AER from 'frank' for widget count");
-
-        let addr = from_str::<SocketAddr>(format!("{:s}:{:u}", ipaddr, port)).unwrap();
-        let mut stream = TcpStream::connect(addr);
-
-        let logentry1 = LogEntry {
-            index: 17,
-            term: 1,
-            command_name: ~"inventory.widget.count = 84",
-            command: None,
-        };
-        let logentry2 = LogEntry {
-            index: 18,
-            term: 1,
-            command_name: ~"inventory.widget.count = 83",
-            command: None,
-        };
-        // let logentry3 = LogEntry {
-        //     index: 16,
-        //     term: 1,
-        //     command_name: ~"inventory.widget.count = 85",
-        //     command: None,
-        // };
-
-        let entries: Vec<LogEntry> = vec!(logentry1, logentry2/*, logentry3*/);
-        println!(">>> SIZE {}", entries.len());
-
-        // first send AppendEntriesRequest
-        let aereq = ~AppendEntriesRequest{
-            term: 0,
-            prev_log_idx: 0,
-            prev_log_term: 0,
-            commit_idx: 0,
-            leader_name: ~"frank",
-            entries: entries,
-        };
-
-        let json_aereq = json::Encoder::str_encode(aereq);
-        let req_msg = format!("Length: {:u}\n{:s}", json_aereq.len(), json_aereq);
-        let mut result = stream.write_str(req_msg);
-        if result.is_err() {
-            println!("Client ERROR: {:?}", result.err());
-        }
-        let _ = stream.flush();
-        println!(">>>> Client: message sent to server >> wiating for RESPONSE!");
-
-        // TODO: messages sent will need to include some "EOF" marker => either size or a sentinel "DONE" marker
-
-        match stream.read_to_str() {
-            Ok(resp) => println!("vvvvvv Server response to client: {:?}", resp),
-            Err(e)   => println!("vvvvvvvServer response error in client {:?}", e)
-        }
-
-        drop(stream); // close the connection   ==> NEED THIS? ask on #rust
-
-
-        // then send stop request
-        timer::sleep(2222);
-        println!(">>> Client sending STOP client");
-        stream = TcpStream::connect(addr);
-
-        let stop_msg = format!("Length: {:u}\n{:s}", "STOP".len(), "STOP");  // TODO: make "STOP" a static constant
-        result = stream.write_str(stop_msg);
-        if result.is_err() {
-            println!("Client ERROR: {:?}", result.err());
-        }
-        drop(stream); // close the connection   ==> NEED THIS? ask on #rust
-    });
-}
-
-
-
 fn main() {
     let name = ~"S1";
     let path = Path::new(~"datalog/S1");
     let ipaddr = ~"127.0.0.1";
     let port = 23158;
-
-    println!("Now starting test client");
-    test_client(ipaddr.clone(), port);
-
 
     let result = Server::new(name, path, ipaddr, port);
     if result.is_err() {
@@ -414,7 +334,6 @@ fn main() {
         Ok(_) => (),
         Err(e) => println!("ERROR: {:?}", e)
     }
-
 }
 
 #[cfg(test)]
@@ -500,7 +419,7 @@ mod test {
     /// The number of entries in idx_vec and term_vec determines the # of logentries to send to
     /// the server. The len of the two vectors must be the same.
     ///
-    fn send_aereqs(stream: &mut IoResult<TcpStream>, idx_vec: Vec<u64>, term_vec: Vec<u64>) -> Vec<LogEntry> {
+    fn send_aereqs(stream: &mut IoResult<TcpStream>, idx_vec: Vec<u64>, term_vec: Vec<u64>, prev_log_idx: u64, prev_log_term: u64) -> Vec<LogEntry> {
         if idx_vec.len() != term_vec.len() {
             fail!("send_reqs: size of vectors doesn't match: idx_vec: {}; term_vec: {}", idx_vec.len(), term_vec.len());
         }
@@ -521,9 +440,9 @@ mod test {
 
         let aereq = ~AppendEntriesRequest{
             term: *term_vec.get( term_vec.len() - 1 ),
-            prev_log_idx: 0,  // TODO: need to handle these other fields
-            prev_log_term: 0,
-            commit_idx: 0,
+            prev_log_idx: prev_log_idx,
+            prev_log_term: prev_log_term,
+            commit_idx: 0,   // TODO: need to handle this field
             leader_name: ~"S100TEST",  // TODO: make static
             entries: entries.clone(),
         };
@@ -540,6 +459,7 @@ mod test {
         entries
     }
 
+    // meant for sending a single AERequest
     fn send_aereq1(stream: &mut IoResult<TcpStream>) -> LogEntry {
         /* ---[ prepare and send request ]--- */
         let logentry1 = LogEntry {
@@ -695,7 +615,9 @@ mod test {
         let mut stream = TcpStream::connect(addr);
         let terms: Vec<u64> = vec!(1, 1, 1, 1);
         let indexes: Vec<u64> = vec!(1, 2, 3, 4);
-        let logentries: Vec<LogEntry> = send_aereqs(&mut stream, indexes, terms);
+        let prev_log_idx = 0u64;
+        let prev_log_term = 0u64;
+        let logentries: Vec<LogEntry> = send_aereqs(&mut stream, indexes, terms, prev_log_term, prev_log_term);
 
         /* ---[ read response and signal server to shut down ]--- */
 
@@ -728,7 +650,9 @@ mod test {
         /* ---[ AER 1, valid, initial ]--- */
         let mut terms: Vec<u64> = vec!(1);
         let mut indexes: Vec<u64> = vec!(1);
-        let logentries1: Vec<LogEntry> = send_aereqs(&mut stream, indexes, terms);
+        let prev_log_idx = 0u64;
+        let prev_log_term = 0u64;
+        let logentries1: Vec<LogEntry> = send_aereqs(&mut stream, indexes, terms, prev_log_idx, prev_log_term);
         let result1 = stream.read_to_str();
         drop(stream); // close the connection
 
@@ -737,7 +661,9 @@ mod test {
         stream = TcpStream::connect(addr);
         terms = vec!(2, 2);
         indexes = vec!(2, 3);
-        let logentries2: Vec<LogEntry> = send_aereqs(&mut stream, indexes, terms);
+        let prev_log_idx = 1u64;
+        let prev_log_term = 1u64;
+        let logentries2: Vec<LogEntry> = send_aereqs(&mut stream, indexes, terms, prev_log_idx, prev_log_term);
         let result2 = stream.read_to_str();
         drop(stream); // close the connection
 
@@ -746,7 +672,9 @@ mod test {
         stream = TcpStream::connect(addr);
         terms = vec!(1);
         indexes = vec!(4);
-        let logentries3: Vec<LogEntry> = send_aereqs(&mut stream, indexes, terms);
+        let prev_log_idx = 3u64;
+        let prev_log_term = 2u64;
+        let logentries3: Vec<LogEntry> = send_aereqs(&mut stream, indexes, terms, prev_log_idx, prev_log_term);
         let result3 = stream.read_to_str();
         drop(stream); // close the connection
 
@@ -786,6 +714,63 @@ mod test {
         let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
         assert_eq!(2, aeresp.term);
         assert_eq!(3, aeresp.curr_idx);
+        assert_eq!(false, aeresp.success);
+
+        tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
+    }
+
+    #[test]
+    fn test_follower_with_AppendEntryRequests_with_invalid_prevLogTerm() {
+        // launch server => this will not shutdown until a STOP signal is sent
+        let addr = launch_server();
+        let mut stream = TcpStream::connect(addr);
+
+        /* ---[ AER 1, valid, initial ]--- */
+        let mut terms: Vec<u64> = vec!(1,1);
+        let mut indexes: Vec<u64> = vec!(1,2);
+        let prev_log_idx = 0u64;
+        let prev_log_term = 0u64;
+        let logentries1: Vec<LogEntry> = send_aereqs(&mut stream, indexes, terms, prev_log_idx, prev_log_term);
+        let result1 = stream.read_to_str();
+        drop(stream); // close the connection
+
+
+        /* ---[ AER 2: valid, term increment ]--- */
+        stream = TcpStream::connect(addr);
+        terms = vec!(2, 2);
+        indexes = vec!(2, 3);
+        let prev_log_idx = 2u64;
+        let prev_log_term = 2u64; // this is what's being tested: should be 1, not 2
+        let logentries2: Vec<LogEntry> = send_aereqs(&mut stream, indexes, terms, prev_log_idx, prev_log_term);
+        let result2 = stream.read_to_str();
+        drop(stream); // close the connection
+
+
+        signal_shutdown();  // TODO: is there a better way to ensure a fn is called if an assert fails?
+
+        /* ---[ validate ]--- */
+
+        assert_eq!(2, logentries1.len());
+        assert_eq!(2, logentries2.len());
+
+        // result 1
+        assert!(result1.is_ok());
+        let resp = result1.unwrap();
+
+        assert!(resp.contains("\"success\":true"));
+        let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
+        assert_eq!(1, aeresp.term);
+        assert_eq!(2, aeresp.curr_idx);
+        assert_eq!(true, aeresp.success);
+
+        // result 2
+        assert!(result2.is_ok());
+        let resp = result2.unwrap();
+
+        assert!(resp.contains("\"success\":false"));
+        let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
+        assert_eq!(1, aeresp.term);
+        assert_eq!(2, aeresp.curr_idx);
         assert_eq!(false, aeresp.success);
 
         tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
