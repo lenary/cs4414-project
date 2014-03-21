@@ -20,7 +20,7 @@ use serialize::json;
 use schooner::append_entries;
 use schooner::append_entries::{AppendEntriesRequest,AppendEntriesResponse};
 use schooner::log::Log;
-use schooner::log_entry::LogEntry; // should probably be log::entry::LogEntry => MOVE LATER
+use schooner::log_entry::LogEntry;
 use serror::{InvalidArgument,InvalidState,SError};
 
 pub mod schooner;
@@ -351,11 +351,8 @@ mod test {
 
     use serialize::json;
 
-    use schooner::append_entries::{AppendEntriesRequest};
-    use schooner::log_entry::LogEntry; // should probably be log::entry::LogEntry => MOVE LATER
-
-    // mod append_entries;
-    // mod log_entry;
+    use schooner::append_entries::{AppendEntriesRequest,APND};
+    use schooner::log_entry::LogEntry;
 
     static S1TEST_DIR    : &'static str = "datalog";
     static S1TEST_PATH   : &'static str = "datalog/S1TEST";
@@ -389,6 +386,7 @@ mod test {
         let addr = from_str::<SocketAddr>(format!("{:s}:{:u}", S1TEST_IPADDR, S1TEST_PORT)).unwrap();
         let mut stream = TcpStream::connect(addr);
 
+        // TODO: needs to change to AER with STOP cmd
         let stop_msg = format!("Length: {:u}\n{:s}", "STOP".len(), "STOP");  // TODO: make "STOP" a static constant
         let result = stream.write_str(stop_msg);
         if result.is_err() {
@@ -429,21 +427,21 @@ mod test {
 
         for (idx, term) in it {
             let entry = LogEntry {
-                index: *idx,
+                idx: *idx,
                 term: *term,
-                command_name: format!("inventory.widget.count = {}", 100 - *idx as u64),
-                command: None,
+                data: format!("inventory.widget.count = {}", 100 - *idx as u64),
             };
 
             entries.push(entry);
         }
 
         let aereq = ~AppendEntriesRequest{
+            cmd: APND,            
             term: *term_vec.get( term_vec.len() - 1 ),
             prev_log_idx: prev_log_idx,
             prev_log_term: prev_log_term,
             commit_idx: 0,   // TODO: need to handle this field
-            leader_name: ~"S100TEST",  // TODO: make static
+            leader_id: ~"S100TEST",  // TODO: make static
             entries: entries.clone(),
         };
 
@@ -463,19 +461,19 @@ mod test {
     fn send_aereq1(stream: &mut IoResult<TcpStream>) -> LogEntry {
         /* ---[ prepare and send request ]--- */
         let logentry1 = LogEntry {
-            index: 1,
+            idx: 1,
             term: 1,
-            command_name: ~"inventory.widget.count = 100",
-            command: None,
+            data: ~"inventory.widget.count = 100",
         };
 
         let entries: Vec<LogEntry> = vec!(logentry1.clone());
         let aereq = ~AppendEntriesRequest{
+            cmd: APND,
             term: 0,
             prev_log_idx: 0,
             prev_log_term: 0,
             commit_idx: 0,
-            leader_name: ~"S100TEST",  // TODO: make static
+            leader_id: ~"S100TEST",  // TODO: make static
             entries: entries,
         };
 

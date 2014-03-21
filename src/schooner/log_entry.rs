@@ -5,10 +5,9 @@ use serialize::{json, Decodable};
 
 #[deriving(Decodable, Encodable, Clone)]
 pub struct LogEntry {
-    index: u64,
+    idx:  u64,
     term: u64,
-    command_name: ~str,
-    command: Option<~str>,  // optional, for nop-command
+    data: ~str,
 }
 
 pub fn decode_log_entry(json_str: &str) -> Result<LogEntry, json::Error> {
@@ -27,46 +26,41 @@ pub fn decode_log_entry(json_str: &str) -> Result<LogEntry, json::Error> {
 #[cfg(test)]
 mod test {
     use serialize::{json, Decodable};
-
+    
     #[test]
     fn test_json_encode_of_LogEntry() {
-        let logentry = super::LogEntry{index: 155, term: 2, command_name: ~"wc", command: None};
+        let logentry = super::LogEntry{idx: 155, term: 2, data: ~"wc"};
 
         let jstr = json::Encoder::str_encode(&logentry);
         assert!(jstr.len() > 0);
-        assert!(jstr.contains("\"index\":155"));
-        assert!(jstr.contains("\"command_name\":\"wc\""));
-        assert!(jstr.contains("\"command\":null"));
+        assert!(jstr.contains("\"idx\":155"));
+        assert!(jstr.contains("\"data\":\"wc\""));
     }
     
     #[test]
     fn test_json_decode_of_LogEntry() {
-        let jstr = ~r##"{"index": 200, "term": 4,
-                         "command_name": "foo", "command": null}"##;
+        let jstr = ~r##"{"idx": 200, "term": 4, "data": "foo"}"##;
         let jobj = json::from_str(jstr);
         assert!( jobj.is_ok() );
 
         let mut decoder = json::Decoder::new(jobj.unwrap());
         let logentry: super::LogEntry = Decodable::decode(&mut decoder);
         
-        assert_eq!(200, logentry.index);
+        assert_eq!(200, logentry.idx);
         assert_eq!(4, logentry.term);
-        assert_eq!(~"foo", logentry.command_name);
-        assert_eq!(None, logentry.command);
+        assert_eq!(~"foo", logentry.data);
     }
 
     #[test]
     fn test_decode_log_entry_fn_happy_path() {
-        let jstr = ~r##"{"index": 200, "term": 4,
-                         "command_name": "foo", "command": null}"##;
+        let jstr = ~r##"{"idx": 200, "term": 4, "data": "foo"}"##;
         let result = super::decode_log_entry(jstr);
         assert!(result.is_ok());
 
         let logentry = result.unwrap();
-        assert_eq!(200, logentry.index);
+        assert_eq!(200, logentry.idx);
         assert_eq!(4, logentry.term);
-        assert_eq!(~"foo", logentry.command_name);
-        assert_eq!(None, logentry.command);
+        assert_eq!(~"foo", logentry.data);
     }
 
     #[test]

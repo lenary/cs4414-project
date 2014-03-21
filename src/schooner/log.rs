@@ -4,7 +4,6 @@ extern crate serialize;
 use std::io::{BufferedReader,BufferedWriter,File,IoResult,IoError,InvalidInput,EndOfFile,Append,Open,Read,Write};
 use std::io::fs;
 use std::vec;
-use std::vec_ng::Vec;
 
 //use rand::random;
 use serialize::json;
@@ -31,7 +30,7 @@ impl Log {
             let last_entry = try!(read_last_entry(&path));
             match log_entry::decode_log_entry(last_entry) {
                 Ok(logentry) => {
-                    start_idx = logentry.index;
+                    start_idx = logentry.idx;
                     term = logentry.term;
                 },
                 Err(_) => ()
@@ -86,9 +85,9 @@ impl Log {
                                desc: "term violation",
                                detail: Some(errmsg)});
 
-        } else if entry.term == self.start_term && entry.index <= self.start_idx {
+        } else if entry.term == self.start_term && entry.idx <= self.start_idx {
             let errmsg = format!("schooner.Log: Cannot append entry with earlier index in the same term ({:u}:{:u} <= {:u}:{:u})",
-                                 entry.term, entry.index,
+                                 entry.term, entry.idx,
                                  self.start_term, self.start_idx);
             return Err(IoError{kind: InvalidInput,
                                desc: "index violation",
@@ -97,7 +96,7 @@ impl Log {
 
         let jstr = json::Encoder::str_encode(entry) + "\n";
         try!(self.file.write_str(jstr));
-        self.start_idx = entry.index;
+        self.start_idx = entry.idx;
         self.start_term = entry.term;
         Ok(())
     }
@@ -124,7 +123,7 @@ impl Log {
                 let line = ln.unwrap();
                 match log_entry::decode_log_entry(line.trim()) {
                     Ok(curr_ent) => {
-                        if curr_ent.index == entry.index {
+                        if curr_ent.idx == entry.idx {
                             break;  // TODO: can you break out of an iterator loop?
                         } else {
                             try!(bw.write_str(line));
@@ -169,7 +168,7 @@ mod test {
 
     use schooner::log::Log;
     use schooner::log_entry::LogEntry;
-    use schooner::append_entries::AppendEntriesRequest;
+    use schooner::append_entries::{AppendEntriesRequest,APND};
 
     static testlog: &'static str = "datalog/log.test";
 
@@ -194,16 +193,16 @@ mod test {
         cleanup();
         // TODO: remove command from the logentry !!!!!
         // need to write some logs first
-        let logent1 = LogEntry{index: 1, term: 1, command_name: ~"a", command: None};
-        let logent2 = LogEntry{index: 2, term: 1, command_name: ~"b", command: None};
-        let logent3 = LogEntry{index: 3, term: 1, command_name: ~"c", command: None};
-        let logent4 = LogEntry{index: 4, term: 1, command_name: ~"d", command: None};
-        let logent5 = LogEntry{index: 5, term: 2, command_name: ~"e", command: None};
-        let logent6 = LogEntry{index: 6, term: 2, command_name: ~"f", command: None};
+        let logent1 = LogEntry{idx: 1, term: 1, data: ~"a"};
+        let logent2 = LogEntry{idx: 2, term: 1, data: ~"b"};
+        let logent3 = LogEntry{idx: 3, term: 1, data: ~"c"};
+        let logent4 = LogEntry{idx: 4, term: 1, data: ~"d"};
+        let logent5 = LogEntry{idx: 5, term: 2, data: ~"e"};
+        let logent6 = LogEntry{idx: 6, term: 2, data: ~"f"};
 
         let mut rlog = super::Log::new(Path::new(testlog));
-        let mut aer = AppendEntriesRequest{term: 1, prev_log_idx: 0, prev_log_term: 0,
-                                           commit_idx: 0, leader_name: ~"fred",
+        let mut aer = AppendEntriesRequest{cmd: APND, term: 1, prev_log_idx: 0, prev_log_term: 0,
+                                           commit_idx: 0, leader_id: ~"fred",
                                            entries: vec!(logent1.clone(), logent2, logent3.clone(), logent4.clone())};
         assert!(rlog.is_ok());
         let mut log = rlog.unwrap();
@@ -212,8 +211,8 @@ mod test {
         println!("1: {:?}", result);
         assert!(result.is_ok());
 
-        aer = AppendEntriesRequest{term: 2, prev_log_idx: 4, prev_log_term: 1,
-                                   commit_idx: 0, leader_name: ~"fred",
+        aer = AppendEntriesRequest{cmd: APND, term: 2, prev_log_idx: 4, prev_log_term: 1,
+                                   commit_idx: 0, leader_id: ~"fred",
                                    entries: vec!(logent5.clone(), logent6)};
 
         let result = log.append_entries(&aer);
