@@ -6,16 +6,16 @@ server:
 
 
 # ---[ checks for compilation success ]--- #
-compile: log-check logentry-check appendentries-check server
+compile: log-compile logentry-compile appendentries-compile server
 
 
-log-check:
+log-compile:
 	rustc --crate-type=lib schooner/log.rs
 
-logentry-check:
+logentry-compile:
 	rustc --crate-type=lib schooner/log_entry.rs
 
-appendentries-check:
+appendentries-compile:
 	rustc --crate-type=lib schooner/append_entries.rs
 
 

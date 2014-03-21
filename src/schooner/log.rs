@@ -1,8 +1,12 @@
+extern crate rand;
 extern crate serialize;
 
-use std::io::{BufferedReader,File,IoResult,IoError,InvalidInput,EndOfFile,Append,Write};
+use std::io::{BufferedReader,BufferedWriter,File,IoResult,IoError,InvalidInput,EndOfFile,Append,Open,Read,Write};
+use std::io::fs;
 use std::vec;
 use std::vec_ng::Vec;
+
+//use rand::random;
 use serialize::json;
 
 use schooner::append_entries::AppendEntriesRequest;
@@ -26,7 +30,6 @@ impl Log {
         let mut start_idx = 0;
         let mut term = 0;
         if path.exists() {
-            // TODO: can we use try! here?
             let last_entry = try!(read_last_entry(&path));
             match log_entry::decode_log_entry(last_entry) {
                 Ok(logentry) => {
@@ -52,16 +55,6 @@ impl Log {
         return Ok(lg);
     }
 
-    /// TODO: REMOVE
-    /// Writes multiple log entry to the end of the log.
-    ///
-    pub fn append_entries2(&mut self, entries: Vec<LogEntry>) -> IoResult<()> {
-        for e in entries.move_iter() {
-            try!(self.append_entry(e));
-        }
-        Ok(())
-    }
-
     ///
     /// Writes multiple log entry to the end of the log.
     ///
@@ -78,7 +71,7 @@ impl Log {
                                detail: Some(format!("start_term in follower is {:u}", self.start_term))});
         }
         for e in aereq.entries.iter() {
-            try!(self.append_entry(e.clone()));
+            try!(self.append_entry(e));
         }
         Ok(())
     }
@@ -86,7 +79,7 @@ impl Log {
     ///
     /// Writes a single log entry to the end of the log.
     ///
-    pub fn append_entry(&mut self, entry: LogEntry) -> IoResult<()> {
+    pub fn append_entry(&mut self, entry: &LogEntry) -> IoResult<()> {
         // TODO: may need locking here later
         if entry.term < self.start_term {
             let errmsg = format!("schooner.Log: Term of entry ({:u}) is earlier than current term ({:u})",
@@ -104,10 +97,52 @@ impl Log {
                                detail: Some(errmsg)});
         }
 
-        let jstr = json::Encoder::str_encode(&entry) + "\n";
+        let jstr = json::Encoder::str_encode(entry) + "\n";
         try!(self.file.write_str(jstr));
         self.start_idx = entry.index;
         self.start_term = entry.term;
+        Ok(())
+    }
+
+    ///
+    /// truncate_log finds the entry in the log that matches the entry passed in
+    /// and removes it and all subsequent entries from the log, effectively
+    /// truncating the log on file.
+    /// 
+    pub fn truncate_log(&mut self, entry: &LogEntry) -> IoResult<()> {
+        // let r: u64 = random();
+        let r: u64 = 123456789;  // FIXME
+        // let tmppath = Path::new(&self.path.display().to_str().to_owned() + r.to_str().to_owned());
+        let tmppath = Path::new("foo" + r.to_str());
+
+        {
+            let file = try!(File::open_mode(&self.path, Open, Read));
+            let tmpfile = try!(File::open_mode(&self.path, Open, Write));
+
+            let mut br = BufferedReader::new(file);
+            let mut bw = BufferedWriter::new(tmpfile);
+            for ln in br.lines() {
+                // TODO: does trim remove newline?
+                let line = ln.unwrap();
+                match log_entry::decode_log_entry(line.trim()) {
+                    Ok(curr_ent) => {
+                        if curr_ent.index == entry.index {
+                            break;  // TODO: can you break out of an iterator loop?
+                        } else {
+                            try!(bw.write_str(line));
+                        }
+                    },
+                    Err(e) => fail!("schooner.log.truncate_log: The log {} is corrupted.",
+                                    self.path.display().to_str())
+                }
+            }
+        }
+        // now rename/swap files
+        try!(fs::unlink(&self.path));
+        try!(fs::rename(&tmppath,&self.path));
+        
+        // restore self.file to append to end of newly truncated file
+        self.file = try!(File::open_mode(&self.path, Append, Write));
         Ok(())
     }
 }
@@ -126,4 +161,48 @@ fn read_last_entry(path: &Path) -> IoResult<~str> {
         }
     }
     Ok(last_line)
+}
+
+
+#[cfg(test)]
+mod test {
+    // FAIL: imports but has wrong "path"
+    // use super::append_entries::AppendEntriesRequest;
+    // use super::log_entry::LogEntry;
+    // use append_entries::AppendEntriesRequest;
+    // use log_entry::LogEntry;
+    // use super::Log;
+
+    // FAIL: cannot reference mod directly
+    // pub mod append_entries;
+    // pub mod log_entry;
+
+    #[test]
+    fn test_truncate() {
+        // TODO: remove command from the logentry !!!!!
+        // need to write some logs first
+        let logent1 = super::log_entry::LogEntry{index: 1, term: 1, command_name: ~"a", command: None};
+        let logent2 = super::log_entry::LogEntry{index: 2, term: 1, command_name: ~"b", command: None};
+        let logent3 = super::log_entry::LogEntry{index: 3, term: 1, command_name: ~"c", command: None};
+        let logent4 = super::log_entry::LogEntry{index: 4, term: 1, command_name: ~"d", command: None};
+        let logent5 = super::log_entry::LogEntry{index: 5, term: 2, command_name: ~"e", command: None};
+        let logent6 = super::log_entry::LogEntry{index: 6, term: 2, command_name: ~"f", command: None};
+
+        let rlog = super::Log::new(Path::new(~"datalog/log.test"));
+        let mut aer = super::append_entries::AppendEntriesRequest{term: 1, prev_log_idx: 0, prev_log_term: 0,
+                                                                  commit_idx: 0, leader_name: ~"fred",
+                                                                  entries: vec!(logent1, logent2, logent3, logent4)};
+
+        let result = rlog.append_entries(aer);
+        assert!(result.is_ok());
+        
+        aer = super::append_entries::AppendEntriesRequest{term: 1, prev_log_idx: 0, prev_log_term: 0,
+                                                          commit_idx: 0, leader_name: ~"fred",
+                                                          entries: vec!(logent5, logent6)};
+
+        let result = rlog.append_entries(aer);
+        assert!(result.is_ok());
+        // now truncate
+        // LEFT OFF => not done
+    }
 }

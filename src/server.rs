@@ -491,7 +491,7 @@ mod test {
         logentry1
     }
 
-    #[test]
+    //#[test]
     fn test_follower_with_single_AppendEntryRequest() {
         // launch server => this will not shutdown until a STOP signal is sent
         let addr = launch_server();
@@ -539,7 +539,7 @@ mod test {
         tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
     }
 
-    #[test]
+    //#[test]
     fn test_follower_with_same_AppendEntryRequest_twice_should_return_false_2nd_time() {
         // launch server => this will not shutdown until a STOP signal is sent
         let addr = launch_server();
@@ -608,7 +608,7 @@ mod test {
         tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
     }
 
-    #[test]
+    //#[test]
     fn test_follower_with_multiple_valid_AppendEntryRequests() {
         // launch server => this will not shutdown until a STOP signal is sent
         let addr = launch_server();
@@ -641,7 +641,7 @@ mod test {
         tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
     }
 
-    #[test]
+    //#[test]
     fn test_follower_with_AppendEntryRequests_with_invalid_term() {
         // launch server => this will not shutdown until a STOP signal is sent
         let addr = launch_server();
@@ -719,7 +719,7 @@ mod test {
         tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
     }
 
-    #[test]
+    //#[test]
     fn test_follower_with_AppendEntryRequests_with_invalid_prevLogTerm() {
         // launch server => this will not shutdown until a STOP signal is sent
         let addr = launch_server();
