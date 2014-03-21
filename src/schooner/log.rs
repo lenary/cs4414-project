@@ -11,9 +11,7 @@ use serialize::json;
 
 use schooner::append_entries::AppendEntriesRequest;
 use schooner::log_entry::LogEntry;
-
-pub mod append_entries;
-pub mod log_entry;
+use schooner::log_entry;
 
 pub struct Log {
     file: File,      // open File with Append/Write state
@@ -108,8 +106,8 @@ impl Log {
     /// truncate_log finds the entry in the log that matches the entry passed in
     /// and removes it and all subsequent entries from the log, effectively
     /// truncating the log on file.
-    /// 
-    pub fn truncate_log(&mut self, entry: &LogEntry) -> IoResult<()> {
+    ///
+    pub fn truncate(&mut self, entry: &LogEntry) -> IoResult<()> {
         // let r: u64 = random();
         let r: u64 = 123456789;  // FIXME
         // let tmppath = Path::new(&self.path.display().to_str().to_owned() + r.to_str().to_owned());
@@ -117,7 +115,7 @@ impl Log {
 
         {
             let file = try!(File::open_mode(&self.path, Open, Read));
-            let tmpfile = try!(File::open_mode(&self.path, Open, Write));
+            let tmpfile = try!(File::open_mode(&tmppath, Open, Write));
 
             let mut br = BufferedReader::new(file);
             let mut bw = BufferedWriter::new(tmpfile);
@@ -140,7 +138,7 @@ impl Log {
         // now rename/swap files
         try!(fs::unlink(&self.path));
         try!(fs::rename(&tmppath,&self.path));
-        
+
         // restore self.file to append to end of newly truncated file
         self.file = try!(File::open_mode(&self.path, Append, Write));
         Ok(())
@@ -166,43 +164,85 @@ fn read_last_entry(path: &Path) -> IoResult<~str> {
 
 #[cfg(test)]
 mod test {
-    // FAIL: imports but has wrong "path"
-    // use super::append_entries::AppendEntriesRequest;
-    // use super::log_entry::LogEntry;
-    // use append_entries::AppendEntriesRequest;
-    // use log_entry::LogEntry;
-    // use super::Log;
+    use std::io::fs;
+    use std::io::{BufferedReader,File};
 
-    // FAIL: cannot reference mod directly
-    // pub mod append_entries;
-    // pub mod log_entry;
+    use schooner::log::Log;
+    use schooner::log_entry::LogEntry;
+    use schooner::append_entries::AppendEntriesRequest;
+
+    static testlog: &'static str = "datalog/log.test";
+
+    fn cleanup() {
+        let p = Path::new(testlog);
+        fs::unlink(&p);
+    }
+
+    fn num_entries_in_test_log() -> uint {
+        let p = Path::new(testlog);
+        let f = File::open(&p);
+        let mut br = BufferedReader::new(f);
+        let mut count: uint = 0;
+        for ln in br.lines() {
+            count += 1;
+        }
+        count
+    }
 
     #[test]
     fn test_truncate() {
+        cleanup();
         // TODO: remove command from the logentry !!!!!
         // need to write some logs first
-        let logent1 = super::log_entry::LogEntry{index: 1, term: 1, command_name: ~"a", command: None};
-        let logent2 = super::log_entry::LogEntry{index: 2, term: 1, command_name: ~"b", command: None};
-        let logent3 = super::log_entry::LogEntry{index: 3, term: 1, command_name: ~"c", command: None};
-        let logent4 = super::log_entry::LogEntry{index: 4, term: 1, command_name: ~"d", command: None};
-        let logent5 = super::log_entry::LogEntry{index: 5, term: 2, command_name: ~"e", command: None};
-        let logent6 = super::log_entry::LogEntry{index: 6, term: 2, command_name: ~"f", command: None};
+        let logent1 = LogEntry{index: 1, term: 1, command_name: ~"a", command: None};
+        let logent2 = LogEntry{index: 2, term: 1, command_name: ~"b", command: None};
+        let logent3 = LogEntry{index: 3, term: 1, command_name: ~"c", command: None};
+        let logent4 = LogEntry{index: 4, term: 1, command_name: ~"d", command: None};
+        let logent5 = LogEntry{index: 5, term: 2, command_name: ~"e", command: None};
+        let logent6 = LogEntry{index: 6, term: 2, command_name: ~"f", command: None};
 
-        let rlog = super::Log::new(Path::new(~"datalog/log.test"));
-        let mut aer = super::append_entries::AppendEntriesRequest{term: 1, prev_log_idx: 0, prev_log_term: 0,
-                                                                  commit_idx: 0, leader_name: ~"fred",
-                                                                  entries: vec!(logent1, logent2, logent3, logent4)};
+        let mut rlog = super::Log::new(Path::new(testlog));
+        let mut aer = AppendEntriesRequest{term: 1, prev_log_idx: 0, prev_log_term: 0,
+                                           commit_idx: 0, leader_name: ~"fred",
+                                           entries: vec!(logent1.clone(), logent2, logent3.clone(), logent4.clone())};
+        assert!(rlog.is_ok());
+        let mut log = rlog.unwrap();
 
-        let result = rlog.append_entries(aer);
+        let result = log.append_entries(&aer);
+        println!("1: {:?}", result);
         assert!(result.is_ok());
-        
-        aer = super::append_entries::AppendEntriesRequest{term: 1, prev_log_idx: 0, prev_log_term: 0,
-                                                          commit_idx: 0, leader_name: ~"fred",
-                                                          entries: vec!(logent5, logent6)};
 
-        let result = rlog.append_entries(aer);
+        aer = AppendEntriesRequest{term: 2, prev_log_idx: 4, prev_log_term: 1,
+                                   commit_idx: 0, leader_name: ~"fred",
+                                   entries: vec!(logent5.clone(), logent6)};
+
+        let result = log.append_entries(&aer);
+        println!("2: {:?}", result);
         assert!(result.is_ok());
+
+        assert_eq!(6, num_entries_in_test_log());
+
         // now truncate
-        // LEFT OFF => not done
+        let result = log.truncate(&logent4);
+        println!("3: {:?}", result);
+        assert!(result.is_ok());
+        assert_eq!(3, num_entries_in_test_log());
+
+        let result = log.truncate(&logent3);
+        println!("4: {:?}", result);
+        assert!(result.is_ok());
+        assert_eq!(2, num_entries_in_test_log());
+
+        // try to truncate one that isn't there
+        let result = log.truncate(&logent5);
+        println!("5: {:?}", result);
+        assert!(result.is_ok());
+        assert_eq!(2, num_entries_in_test_log());  // num entries didn't change
+
+        // now truncate the very first entry
+        let result = log.truncate(&logent1);
+        println!("6: {:?}", result);
+        assert!(result.is_ok());
+        assert_eq!(0, num_entries_in_test_log());
     }
 }

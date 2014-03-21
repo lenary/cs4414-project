@@ -5,7 +5,6 @@ use std::vec_ng::Vec;
 use serialize::{json, Decodable};
 
 use schooner::log_entry::LogEntry;
-pub mod log_entry;
 
 #[deriving(Decodable, Encodable, Clone)]
 pub struct AppendEntriesRequest {
