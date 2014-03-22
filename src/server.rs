@@ -178,7 +178,7 @@ impl Server {
                                                         curr_idx: self.log.start_idx,
                                                         success: true},
                         Err(e) => {
-                            error!("{:?}", e);
+                            error!("******>>>>>>>>>>>>>> {:?}", e);
                             AppendEntriesResponse{term: self.log.start_term,
                                                   curr_idx: self.log.start_idx,
                                                   success: false}
@@ -548,7 +548,7 @@ mod test {
         tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
     }
 
-    //#[test]
+    #[test]
     fn test_follower_with_same_AppendEntryRequest_twice_should_return_false_2nd_time() {
         // launch server => this will not shutdown until a STOP signal is sent
         let addr = launch_server();
@@ -617,7 +617,7 @@ mod test {
         tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
     }
 
-    //#[test]
+    #[test]
     fn test_follower_with_multiple_valid_AppendEntryRequests() {
         // launch server => this will not shutdown until a STOP signal is sent
         let addr = launch_server();
@@ -650,7 +650,7 @@ mod test {
         tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
     }
 
-    //#[test]
+    #[test]
     fn test_follower_with_AppendEntryRequests_with_invalid_term() {
         // launch server => this will not shutdown until a STOP signal is sent
         let addr = launch_server();
@@ -781,7 +781,7 @@ mod test {
         // number in logfile after each AER
         assert_eq!(2, num_entries_logged1);
         assert_eq!(1, num_entries_logged2);  // one entry truncated bcs t1_idx2 != t2_idx2
-        // assert_eq!(3, num_entries_logged3);  // two added
+        assert_eq!(3, num_entries_logged3);  // two added
         
         // result 1
         assert!(result1.is_ok());
@@ -800,7 +800,7 @@ mod test {
         assert!(resp.contains("\"success\":false"));
         let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
         assert_eq!(1, aeresp.term);
-        assert_eq!(2, aeresp.curr_idx);
+        assert_eq!(1, aeresp.curr_idx);
         assert_eq!(false, aeresp.success);
 
         // result 3

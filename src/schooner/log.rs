@@ -52,7 +52,9 @@ impl Log {
     }
 
     ///
-    /// Writes multiple log entry to the end of the log.
+    /// Writes multiple log entries to the end of the log or truncates the log to the first_idx
+    /// in the aereq if there is a mismatch between terms for the same indexed entry.
+    /// This method should only be called when the AER has log entries (APND req, not PING).
     ///
     pub fn append_entries(&mut self, aereq: &AppendEntriesRequest) -> IoResult<()> {
         if aereq.prev_log_idx != self.start_idx {  // TODO: this may not be an error condition => need to research
@@ -140,7 +142,7 @@ impl Log {
         // truncate in-memory term/idx vector
         // NOTE: assumes we keep all log entries in place => otherwise have to offset by first idx entry in idx_term_hist
         // FIXME: dangerous => converting u64 to uint, so can only cache up to uint entries
-        self.idx_term_hist.truncate(entry_idx as uint);
+        self.idx_term_hist.truncate((entry_idx - 1) as uint);  // have to subtract bcs idx is 1-based, not 0-based
         if self.idx_term_hist.len() == 0 {
             self.start_idx = 0;
             self.start_term = 0;
