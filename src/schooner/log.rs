@@ -3,9 +3,8 @@ extern crate serialize;
 
 use std::io::{BufferedReader,BufferedWriter,File,IoResult,IoError,InvalidInput,EndOfFile,Append,Open,Read,Write};
 use std::io::fs;
-use std::vec;
+use std::vec::Vec;
 
-//use rand::random;
 use serialize::json;
 
 use schooner::append_entries::AppendEntriesRequest;
@@ -14,11 +13,11 @@ use schooner::log_entry;
 
 pub struct Log {
     file: File,      // open File with Append/Write state
-    path: Path,      // path to log // TODO: dir? file?
-    entries: ~[LogEntry],  // TODO: should this be ~[~LogEntry] ??
-    commit_idx: u64, // last committed index
+    path: Path,      // path to log
+    commit_idx: u64, // last committed index  ==> TODO: this is not handled at all yet
     start_idx: u64,  // idx  of last entry in the logs (before first entry in latest issue) (may not be committed)
     start_term: u64, // term of last entry in the logs (before first entry in latest issue)
+    idx_term_hist: Vec<(u64, u64)>,  // in memory history of idx-term pairs in the logentries on file
 }
 
 impl Log {
@@ -43,10 +42,10 @@ impl Log {
         let lg = ~Log {
             file: file,
             path: path,
-            entries: vec::with_capacity(8),  // necessary?
             commit_idx: start_idx, // TODO: do we know for sure it's committed just bcs it's in the file log?
             start_idx: start_idx,
             start_term: term,
+            idx_term_hist: Vec::with_capacity(4096),
         };
 
         return Ok(lg);
@@ -63,6 +62,7 @@ impl Log {
 
         }
         if aereq.prev_log_term != self.start_term {
+            try!(self.truncate(aereq.prev_log_term));
             return Err(IoError{kind: InvalidInput,
                                desc: "term mismatch at prev_log_idx",
                                detail: Some(format!("start_term in follower is {:u}", self.start_term))});
@@ -77,8 +77,9 @@ impl Log {
     /// Writes a single log entry to the end of the log.
     ///
     pub fn append_entry(&mut self, entry: &LogEntry) -> IoResult<()> {
-        // TODO: may need locking here later
+        // TODO: may need locking here later (goraft uses it -> does schooner need it?)
         if entry.term < self.start_term {
+            // TODO: should this state kick off a change from follower to candidate?
             let errmsg = format!("schooner.Log: Term of entry ({:u}) is earlier than current term ({:u})",
                                  entry.term, self.start_term);
             return Err(IoError{kind: InvalidInput,
@@ -86,6 +87,7 @@ impl Log {
                                detail: Some(errmsg)});
 
         } else if entry.term == self.start_term && entry.idx <= self.start_idx {
+            // TODO: does this stage need a truncation? (I think not)
             let errmsg = format!("schooner.Log: Cannot append entry with earlier index in the same term ({:u}:{:u} <= {:u}:{:u})",
                                  entry.term, entry.idx,
                                  self.start_term, self.start_idx);
@@ -96,22 +98,24 @@ impl Log {
 
         let jstr = json::Encoder::str_encode(entry) + "\n";
         try!(self.file.write_str(jstr));
+
         self.start_idx = entry.idx;
         self.start_term = entry.term;
+        self.idx_term_hist.push((entry.idx, entry.term));
+        
         Ok(())
     }
 
     ///
     /// truncate_log finds the entry in the log that matches the entry passed in
     /// and removes it and all subsequent entries from the log, effectively
-    /// truncating the log on file.
+    /// truncating the log on file.  It also truncates the in-memory idx-term
+    /// vector to match what is on file.
     ///
-    pub fn truncate(&mut self, entry: &LogEntry) -> IoResult<()> {
-        // let r: u64 = random();
-        let r: u64 = 123456789;  // FIXME
-        // let tmppath = Path::new(&self.path.display().to_str().to_owned() + r.to_str().to_owned());
-        let tmppath = Path::new("foo" + r.to_str());
-
+    pub fn truncate(&mut self, entry_idx: u64) -> IoResult<()> {
+        let r: u64 = rand::random();
+        let tmppath = Path::new(format!("{}-{:u}", self.path.display(), r));
+        
         {
             let file = try!(File::open_mode(&self.path, Open, Read));
             let tmpfile = try!(File::open_mode(&tmppath, Open, Write));
@@ -119,32 +123,43 @@ impl Log {
             let mut br = BufferedReader::new(file);
             let mut bw = BufferedWriter::new(tmpfile);
             for ln in br.lines() {
-                // TODO: does trim remove newline?
                 let line = ln.unwrap();
                 match log_entry::decode_log_entry(line.trim()) {
                     Ok(curr_ent) => {
-                        if curr_ent.idx == entry.idx {
+                        if curr_ent.idx == entry_idx {
                             break;  // TODO: can you break out of an iterator loop?
                         } else {
                             try!(bw.write_str(line));
                         }
                     },
-                    Err(e) => fail!("schooner.log.truncate_log: The log {} is corrupted.",
-                                    self.path.display().to_str())
+                    Err(e) => fail!("schooner.log.truncate_log: The log {} is corrupted: {:?}",
+                                    self.path.display().to_str(), e)
                 }
             }
         }
+        // truncate in-memory term/idx vector
+        // NOTE: assumes we keep all log entries in place => otherwise have to offset by first idx entry in idx_term_hist
+        // FIXME: dangerous => converting u64 to uint, so can only cache up to uint entries
+        self.idx_term_hist.truncate(entry_idx as uint);
+        if self.idx_term_hist.len() == 0 {
+            self.start_idx = 0;
+            self.start_term = 0;
+        } else {
+            let (idx, trm) = *self.idx_term_hist.get(self.idx_term_hist.len() - 1);
+            self.start_idx = idx;
+            self.start_term = trm;
+        }
+        
         // now rename/swap files
         try!(fs::unlink(&self.path));
         try!(fs::rename(&tmppath,&self.path));
-
+        
         // restore self.file to append to end of newly truncated file
         self.file = try!(File::open_mode(&self.path, Append, Write));
         Ok(())
     }
 }
 
-// TODO: need to make private?
 fn read_last_entry(path: &Path) -> IoResult<~str> {
     let file = try!(File::open(path));
     let mut br = BufferedReader::new(file);
@@ -222,24 +237,24 @@ mod test {
         assert_eq!(6, num_entries_in_test_log());
 
         // now truncate
-        let result = log.truncate(&logent4);
+        let result = log.truncate(logent4.idx);
         println!("3: {:?}", result);
         assert!(result.is_ok());
         assert_eq!(3, num_entries_in_test_log());
 
-        let result = log.truncate(&logent3);
+        let result = log.truncate(logent3.idx);
         println!("4: {:?}", result);
         assert!(result.is_ok());
         assert_eq!(2, num_entries_in_test_log());
 
         // try to truncate one that isn't there
-        let result = log.truncate(&logent5);
+        let result = log.truncate(logent5.idx);
         println!("5: {:?}", result);
         assert!(result.is_ok());
         assert_eq!(2, num_entries_in_test_log());  // num entries didn't change
 
         // now truncate the very first entry
-        let result = log.truncate(&logent1);
+        let result = log.truncate(logent1.idx);
         println!("6: {:?}", result);
         assert!(result.is_ok());
         assert_eq!(0, num_entries_in_test_log());

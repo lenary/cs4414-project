@@ -1,7 +1,7 @@
 #[allow(deprecated_owned_vector)]
 extern crate serialize;
 
-use std::vec_ng::Vec;
+use std::vec::Vec;
 use serialize::{json, Decodable};
 
 use schooner::log_entry::LogEntry;
@@ -25,7 +25,6 @@ pub struct AppendEntriesRequest {
 }
 
 
-
 // how goraft creates it
 // return newAppendEntriesResponse(s.currentTerm, false, s.log.currentIndex(), s.log.CommitIndex()), false
 
@@ -36,13 +35,6 @@ pub struct AppendEntriesResponse {
     // commit_idx: u64,    // TODO: do we need this?  Not in the cheat sheet of the raft.pdf
     success: bool,
 }
-
-// pub struct AppendEntriesResponseInfo {
-// 	// pb     *protobuf.AppendEntriesResponse  // FIXME: don't know what this is for in goraft
-// 	peer:  ~str,   // for now, do the
-// 	append: bool,  // from go-raft: what is it for?
-//     response: AppendEntriesResponse,
-// }
 
 pub fn decode_append_entries_request(json_str: &str) -> Result<AppendEntriesRequest, json::Error> {
     match json::from_str(json_str) {

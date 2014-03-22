@@ -5,12 +5,11 @@ extern crate sync;
 
 use std::comm::Select;
 use std::io::{Acceptor,BufferedReader,InvalidInput,IoError,IoResult,Listener,Timer};
-use std::io::timer;
-use std::io::net::ip::{Ipv4Addr,SocketAddr};
+use std::io::net::ip::SocketAddr;
 use std::io::net::tcp::{TcpListener,TcpStream};
 use std::str;
 use std::sync::atomics::{AtomicBool,AcqRel,INIT_ATOMIC_BOOL};
-use std::vec_ng::Vec;
+use std::vec::Vec;
 
 use serialize::json;
 
@@ -18,10 +17,9 @@ use serialize::json;
 // use std::comm::{Empty, Data, Disconnected};
 
 use schooner::append_entries;
-use schooner::append_entries::{AppendEntriesRequest,AppendEntriesResponse};
+use schooner::append_entries::AppendEntriesResponse;
 use schooner::log::Log;
-use schooner::log_entry::LogEntry;
-use serror::{InvalidArgument,InvalidState,SError};
+use serror::{InvalidState,SError};
 
 pub mod schooner;
 pub mod serror;  // TODO: move to schooner dir
@@ -244,8 +242,9 @@ fn read_network_msg(stream: TcpStream) -> IoResult<~str> {
     let length = result.unwrap();
     println!("** CL: {:u}", length);  // TODO: remove
 
-    let mut buf: ~[u8] = std::vec::from_elem(length, 0u8);
-    let nread = try!(reader.read(buf));
+    // TODO: this is probably not the right (or long-term) way to handle this => ask on IRC
+    let mut buf: Vec<u8> = Vec::from_elem(length, 0u8);
+    let nread = try!(reader.read(buf.as_mut_slice()));  // FIXME: read needs ~[u8], so how deal with that?
 
     if nread != length {
         return Err(IoError{kind: InvalidInput,
@@ -253,7 +252,7 @@ fn read_network_msg(stream: TcpStream) -> IoResult<~str> {
                            detail: Some(format!("Expected {} bytes, but read {} bytes", length, nread))});
     }
 
-    match str::from_utf8(buf) {
+    match str::from_utf8(buf.as_slice()) {
         Some(s) => Ok(s.to_owned()),
         None    => Err(IoError{kind: InvalidInput,
                                desc: "Conversion of Network message from bytes to str failed",
@@ -346,7 +345,7 @@ mod test {
     use std::io::net::ip::SocketAddr;
     use std::io::net::tcp::TcpStream;
     use std::io::timer;
-    use std::vec_ng::Vec;
+    use std::vec::Vec;
     use std::sync::atomics::AcqRel;
 
     use serialize::json;
@@ -425,6 +424,7 @@ mod test {
         let mut entries = Vec::with_capacity(term_vec.len());
         let mut it = idx_vec.iter().zip(term_vec.iter());
 
+        // loop and create number of LogEntries requested
         for (idx, term) in it {
             let entry = LogEntry {
                 idx: *idx,
@@ -489,7 +489,18 @@ mod test {
         logentry1
     }
 
-    //#[test]
+    fn num_entries_in_log() -> uint {
+        let p = Path::new(S1TEST_PATH);
+        let f = File::open(&p);
+        let mut br = BufferedReader::new(f);
+        let mut count: uint = 0;
+        for ln in br.lines() {
+            count += 1;
+        }
+        count
+    }
+    
+    #[test]
     fn test_follower_with_single_AppendEntryRequest() {
         // launch server => this will not shutdown until a STOP signal is sent
         let addr = launch_server();
@@ -717,7 +728,7 @@ mod test {
         tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
     }
 
-    //#[test]
+    #[test]
     fn test_follower_with_AppendEntryRequests_with_invalid_prevLogTerm() {
         // launch server => this will not shutdown until a STOP signal is sent
         let addr = launch_server();
@@ -732,25 +743,46 @@ mod test {
         let result1 = stream.read_to_str();
         drop(stream); // close the connection
 
-
-        /* ---[ AER 2: valid, term increment ]--- */
+        let num_entries_logged1 = num_entries_in_log();
+        
+        /* ---[ AER 2: invalid, term increment ]--- */
         stream = TcpStream::connect(addr);
         terms = vec!(2, 2);
         indexes = vec!(2, 3);
         let prev_log_idx = 2u64;
-        let prev_log_term = 2u64; // this is what's being tested: should be 1, not 2
+        let prev_log_term = 2u64; // NOTE: this is what's being tested: should be 1, not 2
         let logentries2: Vec<LogEntry> = send_aereqs(&mut stream, indexes, terms, prev_log_idx, prev_log_term);
         let result2 = stream.read_to_str();
         drop(stream); // close the connection
 
+        let num_entries_logged2 = num_entries_in_log();
 
+        /* ---[ AER 3: same as AER2, now valid (after truncation) ]--- */
+        stream = TcpStream::connect(addr);
+        terms = vec!(2, 2);
+        indexes = vec!(2, 3);
+        let prev_log_idx = 1u64;
+        let prev_log_term = 1u64; // NOTE: this switched to 1 bcs the leader agrees that t1_idx1 is correct
+        let logentries3: Vec<LogEntry> = send_aereqs(&mut stream, indexes, terms, prev_log_idx, prev_log_term);
+        let result3 = stream.read_to_str();
+        drop(stream); // close the connection
+        
+        let num_entries_logged3 = num_entries_in_log();
+        
         signal_shutdown();  // TODO: is there a better way to ensure a fn is called if an assert fails?
 
         /* ---[ validate ]--- */
 
+        // number sent
         assert_eq!(2, logentries1.len());
         assert_eq!(2, logentries2.len());
+        assert_eq!(2, logentries3.len());
 
+        // number in logfile after each AER
+        assert_eq!(2, num_entries_logged1);
+        assert_eq!(1, num_entries_logged2);  // one entry truncated bcs t1_idx2 != t2_idx2
+        // assert_eq!(3, num_entries_logged3);  // two added
+        
         // result 1
         assert!(result1.is_ok());
         let resp = result1.unwrap();
@@ -770,6 +802,16 @@ mod test {
         assert_eq!(1, aeresp.term);
         assert_eq!(2, aeresp.curr_idx);
         assert_eq!(false, aeresp.success);
+
+        // result 3
+        assert!(result3.is_ok());
+        let resp = result3.unwrap();
+
+        assert!(resp.contains("\"success\":true"));
+        let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
+        assert_eq!(2, aeresp.term);
+        assert_eq!(3, aeresp.curr_idx);
+        assert_eq!(true, aeresp.success);
 
         tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
     }
