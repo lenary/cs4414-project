@@ -1,3 +1,16 @@
+# 22-Mar LEFT OFF
+* Have implemented truncate and tests passing.
+* Updated lastest rustc today => vec_ng gone
+* Tried to change STOP message, but tests were failing (network_listener thread was shutting down, but not the follower thread)
+* Where to pick up next: read through AER RPC rules in raft.pdf carefully and outline what else needs to be done
+** TODO more test around proper follow log logic
+** Have not implement anything around "commited" stated to the StateMachine => need to design how that will work
+*** goraft uses a separate StateMachine datastructure, go look at that
+* Have only implemented follower logic
+* Need to implement some Leader logic in terms of receiving from clients and sending to followers
+* Follower state servers need to know when a client request is coming in, not a leader message
+** QUESTION leaders send AEReqs, what do clients send?  Need to define a protocol/format for that.  What does goraft do?
+
 # 13-Mar
 * Create a task to listen on socket 23158 -> takes a Chan to put Events on (maybe just pure JSON messages for now?)
 * Peers will communicate via JSON (goraft uses protocol buffers)
