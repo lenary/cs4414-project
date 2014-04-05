@@ -218,7 +218,7 @@ mod test {
 
         let rlog = super::Log::new(Path::new(testlog));
         let mut aer = AppendEntriesRequest{cmd: APND, term: 1, prev_log_idx: 0, prev_log_term: 0,
-                                           commit_idx: 0, leader_id: ~"fred",
+                                           commit_idx: 0, leader_id: 9,
                                            entries: vec!(logent1.clone(), logent2, logent3.clone(), logent4.clone())};
         assert!(rlog.is_ok());
         let mut log = rlog.unwrap();
@@ -228,7 +228,7 @@ mod test {
         assert!(result.is_ok());
 
         aer = AppendEntriesRequest{cmd: APND, term: 2, prev_log_idx: 4, prev_log_term: 1,
-                                   commit_idx: 0, leader_id: ~"fred",
+                                   commit_idx: 0, leader_id: 9,
                                    entries: vec!(logent5.clone(), logent6)};
 
         let result = log.append_entries(&aer);

@@ -30,6 +30,7 @@ pub mod serror;  // TODO: move to schooner dir
 // static DEFAULT_ELECTION_TIMEOUT  : uint = 150;  // in millis
 static STOP_MSG: &'static str = "STOP";
 
+// TODO: this needs to be removed as global state => so can start multiple threads on same machine    
 static mut stop: AtomicBool = INIT_ATOMIC_BOOL;
 
 /* ---[ data structures ]--- */
@@ -46,11 +47,11 @@ pub enum State {
 pub struct Server {
     ip: ~str,
     tcpport: uint,
-    name: ~str,
-    path: Path,
+    id: uint,           // TODO: change to id (uint ?)
+    path: Path,         // path to log file (???)
     state: State,
     current_term: u64,  // curr_term is already in the log, so why need in both? TODO: remove from one or t'other
-	conx_str: ~str,
+	conx_str: ~str,     // TODO: does this need to be stored as state?
 
     log: ~Log,  // TODO: should this just be Log (on stack => can it be copied arnd?)
 
@@ -59,6 +60,7 @@ pub struct Server {
     // more later
 }
 
+// TODO: what is this for?
 pub struct Event {
     msg: ~str,  // just to get started
     // target: ??,
@@ -69,24 +71,16 @@ pub struct Event {
 /* ---[ functions ]--- */
 
 impl Server {
-    pub fn new(name: ~str, logpath: Path, ipaddr: ~str, tcpport: uint) -> IoResult<~Server> {
+    pub fn new(id: uint, logpath: Path, ipaddr: ~str, tcpport: uint) -> IoResult<~Server> {
 
-        if name == ~"" {
-            return Err(IoError{
-                kind: InvalidInput,
-                desc: "server name cannot be blank",
-                detail: None,
-            });
-        }
         let (ch, pt): (Sender<~Event>, Receiver<~Event>) = channel();
-
         let lg = try!(Log::new(logpath.clone()));
         let conx_str = format!("{}:{:u}", &ipaddr, tcpport);
 
         let s = ~Server {
             ip: ipaddr,
             tcpport: tcpport,  // TODO: could we use udp instead? are we doing our own ACKs at the app protocol level?
-            name: name,
+            id: id,
             path: logpath,
             state: Stopped,
             current_term: 0,
@@ -267,7 +261,7 @@ fn read_network_msg(stream: TcpStream) -> IoResult<~str> {
 fn network_listener(conx_str: ~str, chan: Sender<~Event>) {
     let addr = from_str::<SocketAddr>(conx_str).expect("Address error.");
     let mut acceptor = TcpListener::bind(addr).unwrap().listen();
-    println!("server <name> listening on {:}", addr);
+    println!("server <id> listening on {:}", addr);  // TODO: need to pass in id?
 
     let (chsend, chrecv): (Sender<~str>, Receiver<~str>) = channel();
 
@@ -321,12 +315,12 @@ fn is_stop_msg(s: &str) -> bool {
 
 
 fn main() {
-    let name = ~"S1";
+    let id = 1;
     let path = Path::new(~"datalog/S1");
     let ipaddr = ~"127.0.0.1";
     let port = 23158;
 
-    let result = Server::new(name, path, ipaddr, port);
+    let result = Server::new(id, path, ipaddr, port);
     if result.is_err() {
         error!("{:?}", result.err());
         return;
@@ -369,7 +363,7 @@ mod test {
     fn setup() -> ~super::Server {
         unsafe { super::stop.store(false, AcqRel); }
 
-        let name = ~"S1TEST";
+        let id = 1;
         let dirpath = Path::new(S1TEST_DIR);
         let filepath = Path::new(S1TEST_PATH);
 
@@ -382,7 +376,7 @@ mod test {
             assert!(fs_res.is_ok());
         }
 
-        let result = super::Server::new(name, filepath, S1TEST_IPADDR.to_owned(), S1TEST_PORT);
+        let result = super::Server::new(id, filepath, S1TEST_IPADDR.to_owned(), S1TEST_PORT);
         if result.is_err() {
             fail!("{:?}", result.err());
         }
@@ -451,7 +445,7 @@ mod test {
             prev_log_idx: prev_log_idx,
             prev_log_term: prev_log_term,
             commit_idx: 0,           // TODO: need to handle this field
-            leader_id: ~"S100TEST",  // TODO: make static
+            leader_id: 100,
             entries: entries.clone(),
         };
 
@@ -484,7 +478,7 @@ mod test {
             prev_log_idx: 0,
             prev_log_term: 0,
             commit_idx: 0,
-            leader_id: ~"S100TEST",  // TODO: make static
+            leader_id: 100,
             entries: entries,
         };
 

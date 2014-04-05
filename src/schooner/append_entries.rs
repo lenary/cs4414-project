@@ -19,7 +19,7 @@ pub struct AppendEntriesRequest {
     pub prev_log_idx: u64,  // last log idx in leader's log
     pub prev_log_term: u64, // last log term in leader's log
     pub commit_idx: u64,    // last idx of log committed to leader's state machine
-    pub leader_id: ~str,  // TODO: change to Id of type uint?
+    pub leader_id: uint,
     pub entries: Vec<LogEntry>,
 }
 
@@ -119,18 +119,18 @@ mod test {
                                                 prev_log_idx: 13,
                                                 prev_log_term: 1,
                                                 commit_idx: 88,
-                                                leader_id: ~"kong",
+                                                leader_id: 32,
                                                 entries: entries};
 
         let jstr = json::Encoder::str_encode(&aereq);
         assert!(jstr.len() > 0);
-        assert_eq!(~"{\"cmd\":\"APND\",\"term\":66,\"prev_log_idx\":13,\"prev_log_term\":1,\"commit_idx\":88,\"leader_id\":\"kong\",\"entries\":[{\"idx\":155,\"term\":2,\"data\":\"wc\",\"uuid\":\"uuid111\"},{\"idx\":156,\"term\":2,\"data\":\"ps -ef\",\"uuid\":\"uuid222\"},{\"idx\":157,\"term\":2,\"data\":\"\",\"uuid\":\"\"}]}", jstr);
+        assert_eq!(~"{\"cmd\":\"APND\",\"term\":66,\"prev_log_idx\":13,\"prev_log_term\":1,\"commit_idx\":88,\"leader_id\":32,\"entries\":[{\"idx\":155,\"term\":2,\"data\":\"wc\",\"uuid\":\"uuid111\"},{\"idx\":156,\"term\":2,\"data\":\"ps -ef\",\"uuid\":\"uuid222\"},{\"idx\":157,\"term\":2,\"data\":\"\",\"uuid\":\"\"}]}", jstr);
     }
 
     #[test]
     fn test_json_decode_of_AppendEntriesRequest() {
         let jstr = ~r##"{"cmd":"APND", "term": 14, "prev_log_idx": 130, "prev_log_term": 13,
-                         "commit_idx": 77, "leader_id": "locutus",
+                         "commit_idx": 77, "leader_id": 19,
                          "entries": [{"idx": 200, "term": 4, "data": "foo", "uuid": "uuid444"}]}"##;
         let jobj = json::from_str(jstr);
         assert!( jobj.is_ok() );
@@ -143,7 +143,7 @@ mod test {
         assert_eq!(130, appendreq.prev_log_idx);
         assert_eq!(13, appendreq.prev_log_term);
         assert_eq!(77, appendreq.commit_idx);
-        assert_eq!(~"locutus", appendreq.leader_id);
+        assert_eq!(19, appendreq.leader_id);
         assert_eq!(1, appendreq.entries.len());
 
         let logentry = appendreq.entries.get(0);
