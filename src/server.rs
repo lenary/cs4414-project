@@ -30,7 +30,7 @@ pub mod serror;  // TODO: move to schooner dir
 // static DEFAULT_ELECTION_TIMEOUT  : uint = 150;  // in millis
 static STOP_MSG: &'static str = "STOP";
 
-// TODO: this needs to be removed as global state => so can start multiple threads on same machine    
+// TODO: this needs to be removed as global state => so can start multiple threads on same machine
 static mut stop: AtomicBool = INIT_ATOMIC_BOOL;
 
 /* ---[ data structures ]--- */
@@ -47,8 +47,8 @@ pub enum State {
 pub struct Server {
     ip: ~str,
     tcpport: uint,
-    id: uint,           // TODO: change to id (uint ?)
-    path: Path,         // path to log file (???)
+    id: uint,
+    path: Path,         // path to log file (???)  // TODO: path to log is already in the log struct, so why need it here?
     state: State,
     current_term: u64,  // curr_term is already in the log, so why need in both? TODO: remove from one or t'other
 	conx_str: ~str,     // TODO: does this need to be stored as state?
@@ -101,7 +101,7 @@ impl Server {
             return Err(InvalidState(~"schooner.Server: Server already running"));
         }
 
-        self.current_term = self.log.start_term;
+        self.current_term = self.log.term;
         self.state = Follower;
 
         let event_chan = self.c.clone();
@@ -171,15 +171,15 @@ impl Server {
 
                     let aeresp = match self.log.append_entries(&aereq) {
                         Ok(_)  => AppendEntriesResponse{success: true,
-                                                        term: self.log.start_term,
-                                                        idx: self.log.start_idx,
-                                                        commit_idx: self.log.start_idx},   // FIXME: wrong for now
+                                                        term: self.log.term,
+                                                        idx: self.log.idx,
+                                                        commit_idx: self.log.idx},   // FIXME: wrong for now
                         Err(e) => {
                             error!("******>>>>>>>>>>>>>> {:?}", e);
                             AppendEntriesResponse{success: false,
-                                                  term: self.log.start_term,
-                                                  idx: self.log.start_idx,
-                                                  commit_idx: self.log.start_idx}   // FIXME: wrong for now
+                                                  term: self.log.term,
+                                                  idx: self.log.idx,
+                                                  commit_idx: self.log.idx}   // FIXME: wrong for now
                         }
                     };
                     let jstr = json::Encoder::str_encode(&aeresp);
@@ -440,7 +440,7 @@ mod test {
         }
 
         let aereq = ~AppendEntriesRequest{
-            cmd: APND,            
+            cmd: APND,
             term: *term_vec.get( term_vec.len() - 1 ),
             prev_log_idx: prev_log_idx,
             prev_log_term: prev_log_term,
@@ -506,7 +506,7 @@ mod test {
     }
 
     /* ---[ tests ]--- */
-    
+
     #[test]
     fn test_follower_with_single_AppendEntryRequest() {
         // launch server => this will not shutdown until a STOP signal is sent
@@ -603,7 +603,7 @@ mod test {
         let aeresp2 = super::append_entries::decode_append_entries_response(resp).unwrap();
         assert_eq!(1, aeresp2.term);
         assert_eq!(1, aeresp2.idx);
-        // TODO: need to test commit_idx        
+        // TODO: need to test commit_idx
         assert_eq!(true, aeresp2.success);
 
 
@@ -655,7 +655,7 @@ mod test {
         let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
         assert_eq!(1, aeresp.term);
         assert_eq!(4, aeresp.idx);
-        // TODO: need to test commit_idx        
+        // TODO: need to test commit_idx
         assert_eq!(true, aeresp.success);
 
         tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
@@ -715,7 +715,7 @@ mod test {
         assert_eq!(true, aeresp.success);
         assert_eq!(1, aeresp.term);
         assert_eq!(1, aeresp.idx);
-        // TODO: need to test commit_idx        
+        // TODO: need to test commit_idx
 
         // result 2
         assert!(result2.is_ok());
@@ -726,7 +726,7 @@ mod test {
         assert_eq!(true, aeresp.success);
         assert_eq!(2, aeresp.term);
         assert_eq!(3, aeresp.idx);
-        // TODO: need to test commit_idx        
+        // TODO: need to test commit_idx
 
         // result 3
         assert!(result3.is_ok());
@@ -737,7 +737,7 @@ mod test {
         assert_eq!(false, aeresp.success);
         assert_eq!(2, aeresp.term);
         assert_eq!(3, aeresp.idx);
-        // TODO: need to test commit_idx        
+        // TODO: need to test commit_idx
 
         tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
     }
@@ -758,7 +758,7 @@ mod test {
         drop(stream); // close the connection
 
         let num_entries_logged1 = num_entries_in_log();
-        
+
         /* ---[ AER 2: invalid, term increment ]--- */
         stream = TcpStream::connect(addr);
         terms = vec!(2, 2);
@@ -780,9 +780,9 @@ mod test {
         let logentries3: Vec<LogEntry> = send_aereqs(&mut stream, indexes, terms, prev_log_idx, prev_log_term);
         let result3 = stream.read_to_str();
         drop(stream); // close the connection
-        
+
         let num_entries_logged3 = num_entries_in_log();
-        
+
         signal_shutdown();  // TODO: is there a better way to ensure a fn is called if an assert fails?
 
         /* ---[ validate ]--- */
@@ -796,7 +796,7 @@ mod test {
         assert_eq!(2, num_entries_logged1);
         assert_eq!(1, num_entries_logged2);  // one entry truncated bcs t1_idx2 != t2_idx2
         assert_eq!(3, num_entries_logged3);  // two added
-        
+
         // result 1
         assert!(result1.is_ok());
         let resp = result1.unwrap();

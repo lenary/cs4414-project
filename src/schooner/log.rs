@@ -15,8 +15,8 @@ pub struct Log {
     pub file: File,      // open File with Append/Write state
     pub path: Path,      // path to log
     pub commit_idx: u64, // last committed index  ==> TODO: this is not handled at all yet
-    pub start_idx: u64,  // idx  of last entry in the logs (before first entry in latest issue) (may not be committed)
-    pub start_term: u64, // term of last entry in the logs (before first entry in latest issue)
+    pub idx: u64,        // idx  of last entry in the logs, may be ahead of from commit_idx
+    pub term: u64,       // term of last entry in the logs
     pub idx_term_hist: Vec<(u64, u64)>,  // in memory history of idx-term pairs in the logentries on file
 }
 
@@ -43,8 +43,8 @@ impl Log {
             file: file,
             path: path,
             commit_idx: start_idx, // TODO: do we know for sure it's committed just bcs it's in the file log?
-            start_idx: start_idx,
-            start_term: term,
+            idx: start_idx,
+            term: term,
             idx_term_hist: Vec::with_capacity(4096),
         };
 
@@ -57,17 +57,17 @@ impl Log {
     /// This method should only be called when the AER has log entries (APND req, not PING).
     ///
     pub fn append_entries(&mut self, aereq: &AppendEntriesRequest) -> IoResult<()> {
-        if aereq.prev_log_idx != self.start_idx {  // TODO: this may not be an error condition => need to research
+        if aereq.prev_log_idx != self.idx {  // TODO: this may not be an error condition => need to research
             return Err(IoError{kind: InvalidInput,
-                               desc: "prev_log_idx and start_idx mismatch",
-                               detail: Some(format!("start_idx in follower is {:u}", self.start_idx))});
+                               desc: "prev_log_idx and log idx mismatch",
+                               detail: Some(format!("log idx in follower is {:u}", self.idx))});
 
         }
-        if aereq.prev_log_term != self.start_term {
+        if aereq.prev_log_term != self.term {
             try!(self.truncate(aereq.prev_log_term));
             return Err(IoError{kind: InvalidInput,
                                desc: "term mismatch at prev_log_idx",
-                               detail: Some(format!("start_term in follower is {:u}", self.start_term))});
+                               detail: Some(format!("term in follower is {:u}", self.term))});
         }
         for e in aereq.entries.iter() {
             try!(self.append_entry(e));
@@ -80,19 +80,19 @@ impl Log {
     ///
     pub fn append_entry(&mut self, entry: &LogEntry) -> IoResult<()> {
         // TODO: may need locking here later (goraft uses it -> does schooner need it?)
-        if entry.term < self.start_term {
+        if entry.term < self.term {
             // TODO: should this state kick off a change from follower to candidate?
             let errmsg = format!("schooner.Log: Term of entry ({:u}) is earlier than current term ({:u})",
-                                 entry.term, self.start_term);
+                                 entry.term, self.term);
             return Err(IoError{kind: InvalidInput,
                                desc: "term violation",
                                detail: Some(errmsg)});
 
-        } else if entry.term == self.start_term && entry.idx <= self.start_idx {
+        } else if entry.term == self.term && entry.idx <= self.idx {
             // TODO: does this stage need a truncation? (I think not)
             let errmsg = format!("schooner.Log: Cannot append entry with earlier index in the same term ({:u}:{:u} <= {:u}:{:u})",
                                  entry.term, entry.idx,
-                                 self.start_term, self.start_idx);
+                                 self.term, self.idx);
             return Err(IoError{kind: InvalidInput,
                                desc: "index violation",
                                detail: Some(errmsg)});
@@ -101,8 +101,8 @@ impl Log {
         let jstr = json::Encoder::str_encode(entry) + "\n";
         try!(self.file.write_str(jstr));
 
-        self.start_idx = entry.idx;
-        self.start_term = entry.term;
+        self.idx = entry.idx;
+        self.term = entry.term;
         self.idx_term_hist.push((entry.idx, entry.term));
         
         Ok(())
@@ -144,12 +144,12 @@ impl Log {
         // FIXME: dangerous => converting u64 to uint, so can only cache up to uint entries
         self.idx_term_hist.truncate((entry_idx - 1) as uint);  // have to subtract bcs idx is 1-based, not 0-based
         if self.idx_term_hist.len() == 0 {
-            self.start_idx = 0;
-            self.start_term = 0;
+            self.idx = 0;
+            self.term = 0;
         } else {
             let (idx, trm) = *self.idx_term_hist.get(self.idx_term_hist.len() - 1);
-            self.start_idx = idx;
-            self.start_term = trm;
+            self.idx = idx;
+            self.term = trm;
         }
         
         // now rename/swap files
