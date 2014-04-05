@@ -1,5 +1,6 @@
-#[feature(phase)];
-#[phase(syntax, link)] extern crate log;
+#![feature(phase)]
+#[phase(syntax, link)]
+extern crate log;
 extern crate serialize;
 extern crate sync;
 

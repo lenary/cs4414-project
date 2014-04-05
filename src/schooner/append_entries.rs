@@ -1,4 +1,3 @@
-#[allow(deprecated_owned_vector)]
 extern crate serialize;
 
 use std::vec::Vec;
