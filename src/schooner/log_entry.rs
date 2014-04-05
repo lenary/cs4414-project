@@ -5,17 +5,16 @@ use serialize::{json, Decodable};
 
 #[deriving(Decodable, Encodable, Clone)]
 pub struct LogEntry {
-    idx:  u64,
-    term: u64,
-    data: ~str,
+    pub idx:  u64,
+    pub term: u64,
+    pub data: ~str,
 }
 
 pub fn decode_log_entry(json_str: &str) -> Result<LogEntry, json::Error> {
     match json::from_str(json_str) {
         Ok(jobj) => {
             let mut decoder = json::Decoder::new(jobj);
-            let logentry: LogEntry = Decodable::decode(&mut decoder);
-            Ok(logentry)
+            Decodable::decode(&mut decoder)
         },
         Err(e) => Err(e)
     }
@@ -44,7 +43,7 @@ mod test {
         assert!( jobj.is_ok() );
 
         let mut decoder = json::Decoder::new(jobj.unwrap());
-        let logentry: super::LogEntry = Decodable::decode(&mut decoder);
+        let logentry: super::LogEntry = Decodable::decode(&mut decoder).unwrap();
         
         assert_eq!(200, logentry.idx);
         assert_eq!(4, logentry.term);

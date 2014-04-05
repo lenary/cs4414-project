@@ -15,13 +15,13 @@ pub enum Cmd {
 
 #[deriving(Decodable, Encodable, Clone)]
 pub struct AppendEntriesRequest {
-    cmd: Cmd,
-    term: u64,
-    prev_log_idx: u64,
-    prev_log_term: u64,
-    commit_idx: u64,
-    leader_id: ~str,  // TODO: change to Id of type uint?
-    entries: Vec<LogEntry>,
+    pub cmd: Cmd,
+    pub term: u64,
+    pub prev_log_idx: u64,
+    pub prev_log_term: u64,
+    pub commit_idx: u64,
+    pub leader_id: ~str,  // TODO: change to Id of type uint?
+    pub entries: Vec<LogEntry>,
 }
 
 
@@ -30,18 +30,17 @@ pub struct AppendEntriesRequest {
 
 #[deriving(Decodable, Encodable, Clone)]
 pub struct AppendEntriesResponse {
-    term: u64,
-    curr_idx: u64,
-    // commit_idx: u64,    // TODO: do we need this?  Not in the cheat sheet of the raft.pdf
-    success: bool,
+    pub term: u64,
+    pub curr_idx: u64,
+    // pub commit_idx: u64,    // TODO: do we need this?  Not in the cheat sheet of the raft.pdf
+    pub success: bool,
 }
 
 pub fn decode_append_entries_request(json_str: &str) -> Result<AppendEntriesRequest, json::Error> {
     match json::from_str(json_str) {
         Ok(jobj) => {
             let mut decoder = json::Decoder::new(jobj);
-            let aereq: AppendEntriesRequest = Decodable::decode(&mut decoder);
-            Ok(aereq)
+            Decodable::decode(&mut decoder)
         },
         Err(e) => Err(e)
     }
@@ -51,8 +50,7 @@ pub fn decode_append_entries_response(json_str: &str) -> Result<AppendEntriesRes
     match json::from_str(json_str) {
         Ok(jobj) => {
             let mut decoder = json::Decoder::new(jobj);
-            let aeresp: AppendEntriesResponse = Decodable::decode(&mut decoder);
-            Ok(aeresp)
+            Decodable::decode(&mut decoder)
         },
         Err(e) => Err(e)
     }
@@ -86,7 +84,7 @@ mod test {
         assert!( jobj.is_ok() );
 
         let mut decoder = json::Decoder::new(jobj.unwrap());
-        let aeresp: super::AppendEntriesResponse = Decodable::decode(&mut decoder);
+        let aeresp: super::AppendEntriesResponse = Decodable::decode(&mut decoder).unwrap();
 
         assert_eq!(777, aeresp.term);
         assert_eq!(0, aeresp.curr_idx);
@@ -135,7 +133,7 @@ mod test {
         assert!( jobj.is_ok() );
 
         let mut decoder = json::Decoder::new(jobj.unwrap());
-        let appendreq: super::AppendEntriesRequest = Decodable::decode(&mut decoder);
+        let appendreq: super::AppendEntriesRequest = Decodable::decode(&mut decoder).unwrap();
 
         assert_eq!(APND, appendreq.cmd);
         assert_eq!(14, appendreq.term);

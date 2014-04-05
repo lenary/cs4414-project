@@ -6,5 +6,4 @@ server:
 
 test:
 	rustc --test server.rs
-	./server
-
+	export RUST_TEST_TASKS=1 && ./server

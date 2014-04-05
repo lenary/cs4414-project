@@ -50,7 +50,7 @@ pub struct Server {
     current_term: u64,  // curr_term is already in the log, so why need in both? TODO: remove from one or t'other
 	conx_str: ~str,
 
-    priv log: ~Log,  // TODO: should this just be Log (on stack => can it be copied arnd?)
+    log: ~Log,  // TODO: should this just be Log (on stack => can it be copied arnd?)
 
     c: Sender<~Event>,  // TODO: keep chan or port?
     p: Receiver<~Event>,
@@ -335,6 +335,9 @@ fn main() {
     }
 }
 
+
+/* ---[ TESTS ]--- */
+
 #[cfg(test)]
 mod test {
     extern crate serialize;
@@ -494,11 +497,13 @@ mod test {
         let f = File::open(&p);
         let mut br = BufferedReader::new(f);
         let mut count: uint = 0;
-        for ln in br.lines() {
+        for _ in br.lines() {
             count += 1;
         }
         count
     }
+
+    /* ---[ tests ]--- */
     
     #[test]
     fn test_follower_with_single_AppendEntryRequest() {
@@ -624,7 +629,7 @@ mod test {
         let mut stream = TcpStream::connect(addr);
         let terms: Vec<u64> = vec!(1, 1, 1, 1);
         let indexes: Vec<u64> = vec!(1, 2, 3, 4);
-        let prev_log_idx = 0u64;
+        // let prev_log_idx = 0u64;  // TODO: does this need to be used?
         let prev_log_term = 0u64;
         let logentries: Vec<LogEntry> = send_aereqs(&mut stream, indexes, terms, prev_log_term, prev_log_term);
 

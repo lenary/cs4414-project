@@ -12,12 +12,12 @@ use schooner::log_entry::LogEntry;
 use schooner::log_entry;
 
 pub struct Log {
-    file: File,      // open File with Append/Write state
-    path: Path,      // path to log
-    commit_idx: u64, // last committed index  ==> TODO: this is not handled at all yet
-    start_idx: u64,  // idx  of last entry in the logs (before first entry in latest issue) (may not be committed)
-    start_term: u64, // term of last entry in the logs (before first entry in latest issue)
-    idx_term_hist: Vec<(u64, u64)>,  // in memory history of idx-term pairs in the logentries on file
+    pub file: File,      // open File with Append/Write state
+    pub path: Path,      // path to log
+    pub commit_idx: u64, // last committed index  ==> TODO: this is not handled at all yet
+    pub start_idx: u64,  // idx  of last entry in the logs (before first entry in latest issue) (may not be committed)
+    pub start_term: u64, // term of last entry in the logs (before first entry in latest issue)
+    pub idx_term_hist: Vec<(u64, u64)>,  // in memory history of idx-term pairs in the logentries on file
 }
 
 impl Log {
@@ -183,7 +183,6 @@ mod test {
     use std::io::fs;
     use std::io::{BufferedReader,File};
 
-    use schooner::log::Log;
     use schooner::log_entry::LogEntry;
     use schooner::append_entries::{AppendEntriesRequest,APND};
 
@@ -191,7 +190,7 @@ mod test {
 
     fn cleanup() {
         let p = Path::new(testlog);
-        fs::unlink(&p);
+        let _ = fs::unlink(&p);
     }
 
     fn num_entries_in_test_log() -> uint {
@@ -199,7 +198,7 @@ mod test {
         let f = File::open(&p);
         let mut br = BufferedReader::new(f);
         let mut count: uint = 0;
-        for ln in br.lines() {
+        for _ in br.lines() {
             count += 1;
         }
         count
@@ -217,7 +216,7 @@ mod test {
         let logent5 = LogEntry{idx: 5, term: 2, data: ~"e"};
         let logent6 = LogEntry{idx: 6, term: 2, data: ~"f"};
 
-        let mut rlog = super::Log::new(Path::new(testlog));
+        let rlog = super::Log::new(Path::new(testlog));
         let mut aer = AppendEntriesRequest{cmd: APND, term: 1, prev_log_idx: 0, prev_log_term: 0,
                                            commit_idx: 0, leader_id: ~"fred",
                                            entries: vec!(logent1.clone(), logent2, logent3.clone(), logent4.clone())};
