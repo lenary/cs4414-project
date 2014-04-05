@@ -176,14 +176,16 @@ impl Server {
                     let aereq = result.unwrap();
 
                     let aeresp = match self.log.append_entries(&aereq) {
-                        Ok(_)  => AppendEntriesResponse{term: self.log.start_term,
-                                                        curr_idx: self.log.start_idx,
-                                                        success: true},
+                        Ok(_)  => AppendEntriesResponse{success: true,
+                                                        term: self.log.start_term,
+                                                        idx: self.log.start_idx,
+                                                        commit_idx: self.log.start_idx},   // FIXME: wrong for now
                         Err(e) => {
                             error!("******>>>>>>>>>>>>>> {:?}", e);
-                            AppendEntriesResponse{term: self.log.start_term,
-                                                  curr_idx: self.log.start_idx,
-                                                  success: false}
+                            AppendEntriesResponse{success: false,
+                                                  term: self.log.start_term,
+                                                  idx: self.log.start_idx,
+                                                  commit_idx: self.log.start_idx}   // FIXME: wrong for now
                         }
                     };
                     let jstr = json::Encoder::str_encode(&aeresp);
@@ -536,7 +538,8 @@ mod test {
         assert!(resp.contains("\"success\":true"));
         let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
         assert_eq!(1, aeresp.term);
-        assert_eq!(1, aeresp.curr_idx);
+        assert_eq!(1, aeresp.idx);
+        // TODO: need to test aeresp.commit_idx
         assert_eq!(true, aeresp.success);
 
         // validate that response was written to disk
@@ -592,7 +595,8 @@ mod test {
         assert!(resp.contains("\"success\":true"));
         let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
         assert_eq!(1, aeresp.term);
-        assert_eq!(1, aeresp.curr_idx);
+        assert_eq!(1, aeresp.idx);
+        // TODO: need to test commit_idx
         assert_eq!(true, aeresp.success);
 
 
@@ -604,7 +608,8 @@ mod test {
         assert!(resp2.contains("\"success\":false"));
         let aeresp2 = super::append_entries::decode_append_entries_response(resp).unwrap();
         assert_eq!(1, aeresp2.term);
-        assert_eq!(1, aeresp2.curr_idx);
+        assert_eq!(1, aeresp2.idx);
+        // TODO: need to test commit_idx        
         assert_eq!(true, aeresp2.success);
 
 
@@ -655,7 +660,8 @@ mod test {
         assert!(resp.contains("\"success\":true"));
         let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
         assert_eq!(1, aeresp.term);
-        assert_eq!(4, aeresp.curr_idx);
+        assert_eq!(4, aeresp.idx);
+        // TODO: need to test commit_idx        
         assert_eq!(true, aeresp.success);
 
         tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
@@ -712,9 +718,10 @@ mod test {
 
         assert!(resp.contains("\"success\":true"));
         let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
-        assert_eq!(1, aeresp.term);
-        assert_eq!(1, aeresp.curr_idx);
         assert_eq!(true, aeresp.success);
+        assert_eq!(1, aeresp.term);
+        assert_eq!(1, aeresp.idx);
+        // TODO: need to test commit_idx        
 
         // result 2
         assert!(result2.is_ok());
@@ -722,9 +729,10 @@ mod test {
 
         assert!(resp.contains("\"success\":true"));
         let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
-        assert_eq!(2, aeresp.term);
-        assert_eq!(3, aeresp.curr_idx);
         assert_eq!(true, aeresp.success);
+        assert_eq!(2, aeresp.term);
+        assert_eq!(3, aeresp.idx);
+        // TODO: need to test commit_idx        
 
         // result 3
         assert!(result3.is_ok());
@@ -732,9 +740,10 @@ mod test {
 
         assert!(resp.contains("\"success\":false"));
         let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
-        assert_eq!(2, aeresp.term);
-        assert_eq!(3, aeresp.curr_idx);
         assert_eq!(false, aeresp.success);
+        assert_eq!(2, aeresp.term);
+        assert_eq!(3, aeresp.idx);
+        // TODO: need to test commit_idx        
 
         tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
     }
@@ -800,9 +809,10 @@ mod test {
 
         assert!(resp.contains("\"success\":true"));
         let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
-        assert_eq!(1, aeresp.term);
-        assert_eq!(2, aeresp.curr_idx);
         assert_eq!(true, aeresp.success);
+        assert_eq!(1, aeresp.term);
+        // TODO: need to test commit_idx
+        assert_eq!(2, aeresp.idx);
 
         // result 2
         assert!(result2.is_ok());
@@ -810,9 +820,9 @@ mod test {
 
         assert!(resp.contains("\"success\":false"));
         let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
-        assert_eq!(1, aeresp.term);
-        assert_eq!(1, aeresp.curr_idx);
         assert_eq!(false, aeresp.success);
+        assert_eq!(1, aeresp.term);
+        assert_eq!(1, aeresp.idx);
 
         // result 3
         assert!(result3.is_ok());
@@ -820,9 +830,9 @@ mod test {
 
         assert!(resp.contains("\"success\":true"));
         let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
-        assert_eq!(2, aeresp.term);
-        assert_eq!(3, aeresp.curr_idx);
         assert_eq!(true, aeresp.success);
+        assert_eq!(2, aeresp.term);
+        assert_eq!(3, aeresp.idx);
 
         tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
     }
