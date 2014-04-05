@@ -14,11 +14,11 @@ pub enum Cmd {
 
 #[deriving(Decodable, Encodable, Clone)]
 pub struct AppendEntriesRequest {
-    pub cmd: Cmd,
+    pub cmd: Cmd,           // Cmd type -> e.g., append, heartbeat, stop
     pub term: u64,
-    pub prev_log_idx: u64,
-    pub prev_log_term: u64,
-    pub commit_idx: u64,
+    pub prev_log_idx: u64,  // last log idx in leader's log
+    pub prev_log_term: u64, // last log term in leader's log
+    pub commit_idx: u64,    // last idx of log committed to leader's state machine
     pub leader_id: ~str,  // TODO: change to Id of type uint?
     pub entries: Vec<LogEntry>,
 }
@@ -29,10 +29,13 @@ pub struct AppendEntriesRequest {
 
 #[deriving(Decodable, Encodable, Clone)]
 pub struct AppendEntriesResponse {
-    pub term: u64,
-    pub curr_idx: u64,
+    // required by Raft protocol
+    pub success: bool,  // whether follower has agreed to log entries in last AEReq
+    pub term: u64,      // term of last log entry in follower's log
+    // additional Schooner info
+    // TODO: why is this "curr_idx" and not prev_log_idx ????  => what does "current" mean?
+    pub curr_idx: u64,  // idx of last log entry in follower's log (?????)
     // pub commit_idx: u64,    // TODO: do we need this?  Not in the cheat sheet of the raft.pdf
-    pub success: bool,
 }
 
 pub fn decode_append_entries_request(json_str: &str) -> Result<AppendEntriesRequest, json::Error> {
@@ -72,12 +75,12 @@ mod test {
         assert!(jstr.len() > 0);
         assert!(jstr.contains("33"));
         assert!(jstr.contains("\"success\":true"));
-        assert_eq!(~"{\"term\":33,\"curr_idx\":22,\"success\":true}", jstr);
+        assert_eq!(~"{\"success\":true,\"term\":33,\"curr_idx\":22}", jstr);
     }
 
     #[test]
     fn test_json_decode_of_AppendEntriesResponse() {
-        let jstr = ~"{\"term\":777,\"curr_idx\":0,\"success\":false}";
+        let jstr = ~"{\"success\":false,\"term\":777,\"curr_idx\":0}";
 
         let jobj = json::from_str(jstr);
         assert!( jobj.is_ok() );
@@ -92,7 +95,7 @@ mod test {
 
     #[test]
     fn test_json_decode_of_AppendEntriesResponse_via_api() {
-        let jstr = ~"{\"term\":777,\"curr_idx\":99,\"success\":true}";
+        let jstr = ~"{\"success\":true,\"term\":777,\"curr_idx\":99}";
 
         let result = super::decode_append_entries_response(jstr);
         assert!(result.is_ok());

@@ -1,2 +1,4 @@
 datalog
 append_entries
+out
+docs/raft.pdf
