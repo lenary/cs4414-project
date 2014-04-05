@@ -209,12 +209,12 @@ mod test {
         cleanup();
         // TODO: remove command from the logentry !!!!!
         // need to write some logs first
-        let logent1 = LogEntry{idx: 1, term: 1, data: ~"a"};
-        let logent2 = LogEntry{idx: 2, term: 1, data: ~"b"};
-        let logent3 = LogEntry{idx: 3, term: 1, data: ~"c"};
-        let logent4 = LogEntry{idx: 4, term: 1, data: ~"d"};
-        let logent5 = LogEntry{idx: 5, term: 2, data: ~"e"};
-        let logent6 = LogEntry{idx: 6, term: 2, data: ~"f"};
+        let logent1 = LogEntry{idx: 1, term: 1, data: ~"a", uuid: ~"u01"};
+        let logent2 = LogEntry{idx: 2, term: 1, data: ~"b", uuid: ~"u02"};
+        let logent3 = LogEntry{idx: 3, term: 1, data: ~"c", uuid: ~"u03"};
+        let logent4 = LogEntry{idx: 4, term: 1, data: ~"d", uuid: ~"u04"};
+        let logent5 = LogEntry{idx: 5, term: 2, data: ~"e", uuid: ~"u05"};
+        let logent6 = LogEntry{idx: 6, term: 2, data: ~"f", uuid: ~"u06"};
 
         let rlog = super::Log::new(Path::new(testlog));
         let mut aer = AppendEntriesRequest{cmd: APND, term: 1, prev_log_idx: 0, prev_log_term: 0,

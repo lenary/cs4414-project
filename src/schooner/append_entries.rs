@@ -107,9 +107,9 @@ mod test {
 
     #[test]
     fn test_json_encode_of_AppendEntriesRequest() {
-        let logentry1 = LogEntry{idx: 155, term: 2, data: ~"wc"};
-        let logentry2 = LogEntry{idx: 156, term: 2, data: ~"ps -ef"};
-        let logentry3 = LogEntry{idx: 157, term: 2, data: ~""};
+        let logentry1 = LogEntry{idx: 155, term: 2, data: ~"wc", uuid: ~"uuid111"};
+        let logentry2 = LogEntry{idx: 156, term: 2, data: ~"ps -ef", uuid: ~"uuid222"};
+        let logentry3 = LogEntry{idx: 157, term: 2, data: ~"", uuid: ~""};
         let entries = vec!(logentry1, logentry2, logentry3);
         let aereq = super::AppendEntriesRequest{cmd: APND, term: 66, 
                                                 prev_log_idx: 13,
@@ -120,14 +120,14 @@ mod test {
 
         let jstr = json::Encoder::str_encode(&aereq);
         assert!(jstr.len() > 0);
-        assert_eq!(~"{\"cmd\":\"APND\",\"term\":66,\"prev_log_idx\":13,\"prev_log_term\":1,\"commit_idx\":88,\"leader_id\":\"kong\",\"entries\":[{\"idx\":155,\"term\":2,\"data\":\"wc\"},{\"idx\":156,\"term\":2,\"data\":\"ps -ef\"},{\"idx\":157,\"term\":2,\"data\":\"\"}]}", jstr);
+        assert_eq!(~"{\"cmd\":\"APND\",\"term\":66,\"prev_log_idx\":13,\"prev_log_term\":1,\"commit_idx\":88,\"leader_id\":\"kong\",\"entries\":[{\"idx\":155,\"term\":2,\"data\":\"wc\",\"uuid\":\"uuid111\"},{\"idx\":156,\"term\":2,\"data\":\"ps -ef\",\"uuid\":\"uuid222\"},{\"idx\":157,\"term\":2,\"data\":\"\",\"uuid\":\"\"}]}", jstr);
     }
 
     #[test]
     fn test_json_decode_of_AppendEntriesRequest() {
         let jstr = ~r##"{"cmd":"APND", "term": 14, "prev_log_idx": 130, "prev_log_term": 13,
                          "commit_idx": 77, "leader_id": "locutus",
-                         "entries": [{"idx": 200, "term": 4, "data": "foo"}]}"##;
+                         "entries": [{"idx": 200, "term": 4, "data": "foo", "uuid": "uuid444"}]}"##;
         let jobj = json::from_str(jstr);
         assert!( jobj.is_ok() );
 
@@ -147,5 +147,6 @@ mod test {
         assert_eq!(200, logentry.idx);
         assert_eq!(4, logentry.term);
         assert_eq!(~"foo", logentry.data);
+        assert_eq!(~"uuid444", logentry.uuid);
     }
 }

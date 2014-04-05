@@ -3,6 +3,7 @@
 extern crate log;
 extern crate serialize;
 extern crate sync;
+extern crate uuid;
 
 use std::comm::Select;
 use std::io::{Acceptor,BufferedReader,InvalidInput,IoError,IoResult,Listener,Timer};
@@ -353,6 +354,7 @@ mod test {
     use std::sync::atomics::AcqRel;
 
     use serialize::json;
+    use uuid::Uuid;
 
     use schooner::append_entries::{AppendEntriesRequest,APND};
     use schooner::log_entry::LogEntry;
@@ -430,10 +432,12 @@ mod test {
 
         // loop and create number of LogEntries requested
         for (idx, term) in it {
+            let uuidstr = Uuid::new_v4().to_hyphenated_str();
             let entry = LogEntry {
                 idx: *idx,
                 term: *term,
                 data: format!("inventory.widget.count = {}", 100 - *idx as u64),
+                uuid: format!("uuid-{}", uuidstr),
             };
 
             entries.push(entry);
@@ -444,7 +448,7 @@ mod test {
             term: *term_vec.get( term_vec.len() - 1 ),
             prev_log_idx: prev_log_idx,
             prev_log_term: prev_log_term,
-            commit_idx: 0,   // TODO: need to handle this field
+            commit_idx: 0,           // TODO: need to handle this field
             leader_id: ~"S100TEST",  // TODO: make static
             entries: entries.clone(),
         };
@@ -468,6 +472,7 @@ mod test {
             idx: 1,
             term: 1,
             data: ~"inventory.widget.count = 100",
+            uuid: ~"uuid-999"
         };
 
         let entries: Vec<LogEntry> = vec!(logentry1.clone());
