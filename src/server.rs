@@ -48,12 +48,10 @@ pub struct Server {
     ip: ~str,
     tcpport: uint,
     id: uint,
-    path: Path,         // path to log file (???)  // TODO: path to log is already in the log struct, so why need it here?
     state: State,
-    current_term: u64,  // curr_term is already in the log, so why need in both? TODO: remove from one or t'other
-	conx_str: ~str,     // TODO: does this need to be stored as state?
 
-    log: ~Log,  // TODO: should this just be Log (on stack => can it be copied arnd?)
+    // TODO: should this just be Log (on stack => can it be copied arnd?)
+    log: ~Log,  // log holds state information about log idx and term
 
     c: Sender<~Event>,  // TODO: keep chan or port?
     p: Receiver<~Event>,
@@ -75,16 +73,12 @@ impl Server {
 
         let (ch, pt): (Sender<~Event>, Receiver<~Event>) = channel();
         let lg = try!(Log::new(logpath.clone()));
-        let conx_str = format!("{}:{:u}", &ipaddr, tcpport);
 
         let s = ~Server {
             ip: ipaddr,
             tcpport: tcpport,  // TODO: could we use udp instead? are we doing our own ACKs at the app protocol level?
             id: id,
-            path: logpath,
             state: Stopped,
-            current_term: 0,
-            conx_str: conx_str,  // TODO: what the hell is this for? (from goraft)
             log: lg,
             c: ch,
             p: pt,
@@ -101,11 +95,10 @@ impl Server {
             return Err(InvalidState(~"schooner.Server: Server already running"));
         }
 
-        self.current_term = self.log.term;
         self.state = Follower;
 
         let event_chan = self.c.clone();
-        let conx_str = self.conx_str.clone();
+        let conx_str = format!("{}:{:u}", &self.ip, self.tcpport);
         spawn(proc() {
             // needs to be a separate file/impl
             network_listener(conx_str, event_chan);
