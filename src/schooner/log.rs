@@ -70,7 +70,7 @@ impl Log {
             return Err(IoError{kind: InvalidInput,
                                desc: "term mismatch at prev_log_idx",
                                detail: Some(format!("term in follower is {:u}", self.term))});
-        }
+        } 
         for e in aereq.entries.iter() {
             try!(self.append_entry(e));
         }
@@ -188,7 +188,7 @@ mod test {
     use schooner::log_entry::LogEntry;
     use schooner::append_entries::{AppendEntriesRequest,APND};
 
-    static testlog: &'static str = "datalog/log.test";
+    static testlog: &'static str = "datalog/log.test";   //'
 
     fn cleanup() {
         let p = Path::new(testlog);

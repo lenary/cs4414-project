@@ -6,10 +6,10 @@ extern crate sync;
 extern crate uuid;
 
 use std::comm::Select;
+use std::{cmp,str};
 use std::io::{Acceptor,BufferedReader,InvalidInput,IoError,IoResult,Listener,Timer};
 use std::io::net::ip::SocketAddr;
 use std::io::net::tcp::{TcpListener,TcpStream};
-use std::str;
 use std::sync::atomics::{AtomicBool,AcqRel,INIT_ATOMIC_BOOL};
 use std::vec::Vec;
 
@@ -170,16 +170,23 @@ impl Server {
                     let aereq = result.unwrap();
 
                     let aeresp = match self.log.append_entries(&aereq) {
-                        Ok(_)  => AppendEntriesResponse{success: true,
-                                                        term: self.log.term,
-                                                        idx: self.log.idx,
-                                                        commit_idx: self.log.idx},   // FIXME: wrong for now
+                        Ok(_)  => {
+                            // from the Raft spec: adjust commit_idx only if you accepted the AEReq
+                            // and the leader's commit_idx is greater than yours
+                            if aereq.commit_idx > self.commit_idx {
+                                self.commit_idx = cmp::min(aereq.commit_idx, self.log.idx);
+                            }
+                            AppendEntriesResponse{success: true,
+                                                  term: self.log.term,
+                                                  idx: self.log.idx,
+                                                  commit_idx: self.commit_idx}
+                        },
                         Err(e) => {
                             error!("******>>>>>>>>>>>>>> {:?}", e);
                             AppendEntriesResponse{success: false,
                                                   term: self.log.term,
                                                   idx: self.log.idx,
-                                                  commit_idx: self.log.idx}   // FIXME: wrong for now
+                                                  commit_idx: self.commit_idx}
                         }
                     };
                     let jstr = json::Encoder::str_encode(&aeresp);
