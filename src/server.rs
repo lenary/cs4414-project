@@ -359,7 +359,7 @@ mod test {
     use serialize::json;
     use uuid::Uuid;
 
-    use schooner::append_entries::{AppendEntriesRequest,APND};
+    use schooner::append_entries::AppendEntriesRequest;
     use schooner::log_entry::LogEntry;
 
     static S1TEST_DIR    : &'static str = "datalog";         // '
@@ -451,7 +451,6 @@ mod test {
         }
 
         let aereq = ~AppendEntriesRequest{
-            cmd: APND,  // TODO: remove cmd
             term: *term_vec.get( term_vec.len() - 1 ),
             prev_log_idx: prev_log_idx,
             prev_log_term: prev_log_term,
@@ -494,7 +493,6 @@ mod test {
 
         let entries: Vec<LogEntry> = vec!(logentry1.clone());
         let aereq = ~AppendEntriesRequest{
-            cmd: APND,
             term: 1,
             prev_log_idx: 0,
             prev_log_term: 0,

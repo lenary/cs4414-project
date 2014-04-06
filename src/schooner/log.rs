@@ -56,7 +56,7 @@ impl Log {
     ///
     /// Writes multiple log entries to the end of the log or truncates the log to the first_idx
     /// in the aereq if there is a mismatch between terms for the same indexed entry.
-    /// This method should only be called when the AER has log entries (APND req, not PING).
+    /// This method should only be called when the AER has log entries (not heartbeat)
     ///
     pub fn append_entries(&mut self, aereq: &AppendEntriesRequest) -> IoResult<()> {
         if aereq.prev_log_idx != self.idx {  // TODO: this may not be an error condition => need to research
@@ -186,7 +186,7 @@ mod test {
     use std::io::{BufferedReader,File};
 
     use schooner::log_entry::LogEntry;
-    use schooner::append_entries::{AppendEntriesRequest,APND};
+    use schooner::append_entries::AppendEntriesRequest;
 
     static testlog: &'static str = "datalog/log.test";   //'
 
@@ -219,7 +219,7 @@ mod test {
         let logent6 = LogEntry{idx: 6, term: 2, data: ~"f", uuid: ~"u06"};
 
         let rlog = super::Log::new(Path::new(testlog));
-        let mut aer = AppendEntriesRequest{cmd: APND, term: 1, prev_log_idx: 0, prev_log_term: 0,
+        let mut aer = AppendEntriesRequest{term: 1, prev_log_idx: 0, prev_log_term: 0,
                                            commit_idx: 2, leader_id: 9,
                                            entries: vec!(logent1.clone(), logent2, logent3.clone(), logent4.clone())};
         assert!(rlog.is_ok());
@@ -229,7 +229,7 @@ mod test {
         println!("1: {:?}", result);
         assert!(result.is_ok());
 
-        aer = AppendEntriesRequest{cmd: APND, term: 2, prev_log_idx: 4, prev_log_term: 1,
+        aer = AppendEntriesRequest{term: 2, prev_log_idx: 4, prev_log_term: 1,
                                    commit_idx: 2, leader_id: 9,
                                    entries: vec!(logent5.clone(), logent6)};
 
