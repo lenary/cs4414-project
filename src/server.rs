@@ -96,6 +96,11 @@ impl Server {
 
     ///
     /// Central method that sets things up and then runs the server threads/tasks
+    /// Two tasks/threads are in operation:
+    /// - a network-listener task is spawned and
+    /// - the current task goes into the server_loop until a STOP signal is received
+    /// TODO: need to have the network listener take a "stop" chan or perhaps pass stop messages
+    ///       as an Event on the event chan
     ///
     pub fn run(&mut self) -> Result<(), SError> {
         if self.state != Stopped {
@@ -107,7 +112,7 @@ impl Server {
         let event_chan = self.c.clone();
         let conx_str = format!("{}:{:u}", &self.ip, self.tcpport);
         spawn(proc() {
-            // needs to be a separate file/impl
+            // FIXME: needs to be a separate file/impl ??
             network_listener(conx_str, event_chan);
         });
 
@@ -265,11 +270,20 @@ fn read_network_msg(stream: TcpStream) -> IoResult<~str> {
     }
 }
 
+///
+/// The network listener sets up a socket listener loop to accept incoming TCP connections.
+/// When a network msg comes in, an Event is created with the string contents of the "message"
+/// and a Sender channel is put on the Event (why??) and the event is sent.
+/// The serve_loop will read from that channel and process the Event.
+/// Events can be any incoming information, such as STOP messages, AEReqs, AEResponses or client commands (???) => not yet implemented
+/// chan: Event channel in the Server struct.
+/// 
 fn network_listener(conx_str: ~str, chan: Sender<~Event>) {
     let addr = from_str::<SocketAddr>(conx_str).expect("Address error.");
     let mut acceptor = TcpListener::bind(addr).unwrap().listen();
     println!("server <id> listening on {:}", addr);  // TODO: need to pass in id?
 
+    // TODO: document what this channel is for
     let (chsend, chrecv): (Sender<~str>, Receiver<~str>) = channel();
 
     for stream in acceptor.incoming() {
@@ -285,11 +299,15 @@ fn network_listener(conx_str: ~str, chan: Sender<~Event>) {
 
                 if is_stop_msg(input) {
                     println!("NL: DEBUG 1: was stop msg");
-                    unsafe { stop.store(true, AcqRel) }
+                    unsafe { stop.store(true, AcqRel) }  // TODO: THIS NEEDS TO DIE!
 
                 } else {
                     println!("NL: sent Event to event-loop; now waiting on response");
 
+                    // Once the Event is sent to serve-loop task it awaits a response (string)
+                    // and the response will be send back to the network caller.
+                    // Since the response is just a string, all logic of what is in the request 
+                    // & response is handled by the serve-loop
                     let resp = chrecv.recv();
                     println!("NL: sending response: {:?}", resp);
                     let result = stream.write_str(resp);
