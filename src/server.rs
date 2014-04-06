@@ -10,7 +10,6 @@ use std::{cmp,str};
 use std::io::{Acceptor,BufferedReader,InvalidInput,IoError,IoResult,Listener,Timer};
 use std::io::net::ip::SocketAddr;
 use std::io::net::tcp::{TcpListener,TcpStream};
-use std::sync::atomics::{AtomicBool,AcqRel,INIT_ATOMIC_BOOL};
 use std::vec::Vec;
 
 use serialize::json;
@@ -31,9 +30,6 @@ pub mod serror;  // TODO: move to schooner dir
 static STOP_MSG: &'static str = "STOP";   // '
 static UNKNOWN: u64 = 0u64; 
     
-// TODO: this needs to be removed as global state => so can start multiple threads on same machine
-static mut stop: AtomicBool = INIT_ATOMIC_BOOL;
-
 /* ---[ data structures ]--- */
 
 #[deriving(Clone, Eq)]
@@ -163,7 +159,6 @@ impl Server {
                 println!("follower: event message: {}", ev.msg);
                 if is_stop_msg(ev.msg) {
                     println!("FLW: DEBUG 2");
-                    unsafe{ stop.store(true, AcqRel); }
                     self.state = Stopped;
                     break;
 
@@ -285,7 +280,8 @@ fn network_listener(conx_str: ~str, chan: Sender<~Event>) {
 
     // TODO: document what this channel is for
     let (chsend, chrecv): (Sender<~str>, Receiver<~str>) = channel();
-
+    let mut stop_signalled = false;
+    
     for stream in acceptor.incoming() {
         println!("NL: DEBUG 0");
 
@@ -298,8 +294,8 @@ fn network_listener(conx_str: ~str, chan: Sender<~Event>) {
                 chan.send(ev);
 
                 if is_stop_msg(input) {
+                    stop_signalled = true;
                     println!("NL: DEBUG 1: was stop msg");
-                    unsafe { stop.store(true, AcqRel) }  // TODO: THIS NEEDS TO DIE!
 
                 } else {
                     println!("NL: sent Event to event-loop; now waiting on response");
@@ -320,16 +316,13 @@ fn network_listener(conx_str: ~str, chan: Sender<~Event>) {
             },
             Err(ioerr) => error!("ERROR: {:?}", ioerr)
         }
-        unsafe {
-            println!("NL: DEBUG 3: {:?}", stop.load(AcqRel));
-            if stop.load(AcqRel) {
-                println!("NL: DEBUG 4");
-                break;
-            }
-            println!("NL: DEBUG 5");
+        if stop_signalled {
+            println!("NL: DEBUG 4");
+            break;
         }
     }
 
+    // TODO: change this to debug!
     println!("network listener shutting down ...");
 }
 
@@ -372,7 +365,6 @@ mod test {
     use std::io::net::tcp::TcpStream;
     use std::io::timer;
     use std::vec::Vec;
-    use std::sync::atomics::AcqRel;
 
     use serialize::json;
     use uuid::Uuid;
@@ -386,8 +378,6 @@ mod test {
     static S1TEST_PORT   : uint         = 23158;
 
     fn setup() -> ~super::Server {
-        unsafe { super::stop.store(false, AcqRel); }
-
         let id = 1;
         let dirpath = Path::new(S1TEST_DIR);
         let filepath = Path::new(S1TEST_PATH);
