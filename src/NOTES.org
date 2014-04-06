@@ -1,11 +1,14 @@
-# 22-Mar LEFT OFF
+# 05-Apr
+* Starting to add stateMachine (goraft useless as usual)
+* QUESTION How does a follow know the commit_idx at startup?
+* QUESTION Does the commit_idx need to be written to disk somewhere? Or is it assumed to be the prev_log_idx and revised as more information comes in?
+
+# 22-Mar
 * Have implemented truncate and tests passing.
-* Updated lastest rustc today => vec_ng gone
 * Tried to change STOP message, but tests were failing (network_listener thread was shutting down, but not the follower thread)
 * Where to pick up next: read through AER RPC rules in raft.pdf carefully and outline what else needs to be done
 ** TODO more test around proper follow log logic
 ** Have not implement anything around "commited" stated to the StateMachine => need to design how that will work
-*** goraft uses a separate StateMachine datastructure, go look at that
 * Have only implemented follower logic
 * Need to implement some Leader logic in terms of receiving from clients and sending to followers
 * Follower state servers need to know when a client request is coming in, not a leader message

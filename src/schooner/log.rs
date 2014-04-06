@@ -11,10 +11,13 @@ use schooner::append_entries::AppendEntriesRequest;
 use schooner::log_entry::LogEntry;
 use schooner::log_entry;
 
+///
+/// The first valid term and idx is 1.
+/// A term or idx of 0 means "UKNOWN".
+/// 
 pub struct Log {
     pub file: File,      // open File with Append/Write state
     pub path: Path,      // path to log
-    pub commit_idx: u64, // last committed index  ==> TODO: this is not handled at all yet
     pub idx: u64,        // idx  of last entry in the logs, may be ahead of from commit_idx
     pub term: u64,       // term of last entry in the logs
     pub idx_term_hist: Vec<(u64, u64)>,  // in memory history of idx-term pairs in the logentries on file
@@ -42,7 +45,6 @@ impl Log {
         let lg = ~Log {
             file: file,
             path: path,
-            commit_idx: start_idx, // TODO: do we know for sure it's committed just bcs it's in the file log?
             idx: start_idx,
             term: term,
             idx_term_hist: Vec::with_capacity(4096),
@@ -218,7 +220,7 @@ mod test {
 
         let rlog = super::Log::new(Path::new(testlog));
         let mut aer = AppendEntriesRequest{cmd: APND, term: 1, prev_log_idx: 0, prev_log_term: 0,
-                                           commit_idx: 0, leader_id: 9,
+                                           commit_idx: 2, leader_id: 9,
                                            entries: vec!(logent1.clone(), logent2, logent3.clone(), logent4.clone())};
         assert!(rlog.is_ok());
         let mut log = rlog.unwrap();
@@ -228,7 +230,7 @@ mod test {
         assert!(result.is_ok());
 
         aer = AppendEntriesRequest{cmd: APND, term: 2, prev_log_idx: 4, prev_log_term: 1,
-                                   commit_idx: 0, leader_id: 9,
+                                   commit_idx: 2, leader_id: 9,
                                    entries: vec!(logent5.clone(), logent6)};
 
         let result = log.append_entries(&aer);

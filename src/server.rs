@@ -29,7 +29,8 @@ pub mod serror;  // TODO: move to schooner dir
 // static DEFAULT_HEARTBEAT_INTERVAL: uint = 50;   // in millis
 // static DEFAULT_ELECTION_TIMEOUT  : uint = 150;  // in millis
 static STOP_MSG: &'static str = "STOP";
-
+static UNKNOWN: u64 = 0u64;
+    
 // TODO: this needs to be removed as global state => so can start multiple threads on same machine
 static mut stop: AtomicBool = INIT_ATOMIC_BOOL;
 
@@ -53,6 +54,10 @@ pub struct Server {
     // TODO: should this just be Log (on stack => can it be copied arnd?)
     log: ~Log,  // log holds state information about log idx and term
 
+    // stateMachine state
+    commit_idx: u64,           // idx of highest log entry known to be committed across servers
+    last_applied_commit: u64,  // idx of highest log entry applied locally (may not yet be committed on other servers)
+    
     c: Sender<~Event>,  // TODO: keep chan or port?
     p: Receiver<~Event>,
     // more later
@@ -80,6 +85,8 @@ impl Server {
             id: id,
             state: Stopped,
             log: lg,
+            commit_idx: UNKNOWN,   // commit_idx 0 = UNKNOWN
+            last_applied_commit: UNKNOWN,
             c: ch,
             p: pt,
         };
