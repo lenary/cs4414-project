@@ -28,8 +28,8 @@ pub mod serror;  // TODO: move to schooner dir
 
 // static DEFAULT_HEARTBEAT_INTERVAL: uint = 50;   // in millis
 // static DEFAULT_ELECTION_TIMEOUT  : uint = 150;  // in millis
-static STOP_MSG: &'static str = "STOP";
-static UNKNOWN: u64 = 0u64;
+static STOP_MSG: &'static str = "STOP";   // '
+static UNKNOWN: u64 = 0u64; 
     
 // TODO: this needs to be removed as global state => so can start multiple threads on same machine
 static mut stop: AtomicBool = INIT_ATOMIC_BOOL;
@@ -362,9 +362,9 @@ mod test {
     use schooner::append_entries::{AppendEntriesRequest,APND};
     use schooner::log_entry::LogEntry;
 
-    static S1TEST_DIR    : &'static str = "datalog";
-    static S1TEST_PATH   : &'static str = "datalog/S1TEST";
-    static S1TEST_IPADDR : &'static str = "127.0.0.1";
+    static S1TEST_DIR    : &'static str = "datalog";         // '
+    static S1TEST_PATH   : &'static str = "datalog/S1TEST";  // '
+    static S1TEST_IPADDR : &'static str = "127.0.0.1";       // '
     static S1TEST_PORT   : uint         = 23158;
 
     fn setup() -> ~super::Server {
@@ -422,36 +422,40 @@ mod test {
     }
 
     ///
-    /// The number of entries in idx_vec and term_vec determines the # of logentries to send to
-    /// the server. The len of the two vectors must be the same.
-    ///
-    fn send_aereqs(stream: &mut IoResult<TcpStream>, idx_vec: Vec<u64>, term_vec: Vec<u64>, prev_log_idx: u64, prev_log_term: u64) -> Vec<LogEntry> {
-        if idx_vec.len() != term_vec.len() {
+    /// To specify an AEReq with no entries (hearbeat), pass in an idx_vec of size 0 and a term_vec of size 1 (need curr term)
+    /// Otherwise, idx_vec.len() == term_vec() must be true.
+    /// 
+    fn send_aereqs_with_commit_idx(stream: &mut IoResult<TcpStream>, idx_vec: Vec<u64>, term_vec: Vec<u64>,
+                                   prev_log_idx: u64, prev_log_term: u64, commit_idx: u64) -> Vec<LogEntry> {
+
+        if idx_vec.len() > 0 && idx_vec.len() != term_vec.len() {
             fail!("send_reqs: size of vectors doesn't match: idx_vec: {}; term_vec: {}", idx_vec.len(), term_vec.len());
         }
 
         let mut entries = Vec::with_capacity(term_vec.len());
-        let mut it = idx_vec.iter().zip(term_vec.iter());
-
-        // loop and create number of LogEntries requested
-        for (idx, term) in it {
-            let uuidstr = Uuid::new_v4().to_hyphenated_str();
-            let entry = LogEntry {
-                idx: *idx,
-                term: *term,
-                data: format!("inventory.widget.count = {}", 100 - *idx as u64),
-                uuid: format!("uuid-{}", uuidstr),
-            };
-
-            entries.push(entry);
+        if idx_vec.len() > 0 {
+            let mut it = idx_vec.iter().zip(term_vec.iter());
+            
+            // loop and create number of LogEntries requested
+            for (idx, term) in it {
+                let uuidstr = Uuid::new_v4().to_hyphenated_str();
+                let entry = LogEntry {
+                    idx: *idx,
+                    term: *term,
+                    data: format!("inventory.widget.count = {}", 100 - *idx as u64),
+                    uuid: format!("uuid-{}", uuidstr),
+                };
+                
+                entries.push(entry);
+            }
         }
 
         let aereq = ~AppendEntriesRequest{
-            cmd: APND,
+            cmd: APND,  // TODO: remove cmd
             term: *term_vec.get( term_vec.len() - 1 ),
             prev_log_idx: prev_log_idx,
             prev_log_term: prev_log_term,
-            commit_idx: 0,           // TODO: need to handle this field
+            commit_idx: commit_idx,
             leader_id: 100,
             entries: entries.clone(),
         };
@@ -468,6 +472,16 @@ mod test {
         entries
     }
 
+    ///
+    /// The number of entries in idx_vec and term_vec determines the # of logentries to send to
+    /// the server. The len of the two vectors must be the same.
+    ///
+    fn send_aereqs(stream: &mut IoResult<TcpStream>, idx_vec: Vec<u64>, term_vec: Vec<u64>,
+                   prev_log_idx: u64, prev_log_term: u64) -> Vec<LogEntry> {
+        let commit_idx = *idx_vec.get(0);
+        send_aereqs_with_commit_idx(stream, idx_vec, term_vec, prev_log_idx, prev_log_term, commit_idx)
+    }
+
     // meant for sending a single AERequest
     fn send_aereq1(stream: &mut IoResult<TcpStream>) -> LogEntry {
         /* ---[ prepare and send request ]--- */
@@ -481,7 +495,7 @@ mod test {
         let entries: Vec<LogEntry> = vec!(logentry1.clone());
         let aereq = ~AppendEntriesRequest{
             cmd: APND,
-            term: 0,
+            term: 1,
             prev_log_idx: 0,
             prev_log_term: 0,
             commit_idx: 0,
@@ -668,6 +682,7 @@ mod test {
         tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
     }
 
+    // TODO: test commit_idx as well
     #[test]
     fn test_follower_with_AppendEntryRequests_with_invalid_term() {
         // launch server => this will not shutdown until a STOP signal is sent
@@ -722,7 +737,6 @@ mod test {
         assert_eq!(true, aeresp.success);
         assert_eq!(1, aeresp.term);
         assert_eq!(1, aeresp.idx);
-        // TODO: need to test commit_idx
 
         // result 2
         assert!(result2.is_ok());
@@ -733,7 +747,6 @@ mod test {
         assert_eq!(true, aeresp.success);
         assert_eq!(2, aeresp.term);
         assert_eq!(3, aeresp.idx);
-        // TODO: need to test commit_idx
 
         // result 3
         assert!(result3.is_ok());
@@ -744,7 +757,6 @@ mod test {
         assert_eq!(false, aeresp.success);
         assert_eq!(2, aeresp.term);
         assert_eq!(3, aeresp.idx);
-        // TODO: need to test commit_idx
 
         tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
     }
@@ -838,4 +850,150 @@ mod test {
         tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
     }
 
+
+    #[test]
+    fn test_follower_with_AppendEntryRequests_with_changing_commit_idx() {
+        // launch server => this will not shutdown until a STOP signal is sent
+        let addr = launch_server();
+        let mut stream = TcpStream::connect(addr);
+
+        /* ---[ AER 1, valid, initial ]--- */
+        let mut terms: Vec<u64> = vec!(1,1);
+        let mut indexes: Vec<u64> = vec!(1,2);
+        let prev_log_idx = 0u64;
+        let prev_log_term = 0u64;
+        let commit_idx = super::UNKNOWN;  // first send out -> no consensus, so nothing committed
+        let logentries1: Vec<LogEntry> = send_aereqs_with_commit_idx(&mut stream, indexes, terms, prev_log_idx, prev_log_term, commit_idx);
+        let result1 = stream.read_to_str();
+        drop(stream); // close the connection
+
+        let num_entries_logged1 = num_entries_in_log();
+
+        // /* ---[ AER 2: one new entry, commit-idx to 2 ]--- */
+        stream = TcpStream::connect(addr);
+        terms = vec!(2);
+        indexes = vec!(3);
+        let prev_log_idx = 2u64;
+        let prev_log_term = 1u64;
+        let commit_idx = 2;  // idx two has committed on the leader's stateMachine
+        let logentries2: Vec<LogEntry> = send_aereqs_with_commit_idx(&mut stream, indexes, terms, prev_log_idx, prev_log_term, commit_idx);
+        let result2 = stream.read_to_str();
+        drop(stream); // close the connection
+
+        let num_entries_logged2 = num_entries_in_log();
+
+        /* ---[ AER 3: 4 new entries, commit-idx still 2 ]--- */
+        stream = TcpStream::connect(addr);
+        terms = vec!(2, 2, 2, 2);
+        indexes = vec!(4, 5, 6, 7);
+        let prev_log_idx = 3u64;
+        let prev_log_term = 2u64;
+        let commit_idx = 2;  // only idx two has committed on the leader's stateMachine (no change)
+        let logentries3: Vec<LogEntry> = send_aereqs_with_commit_idx(&mut stream, indexes, terms, prev_log_idx, prev_log_term, commit_idx);
+        let result3 = stream.read_to_str();
+        drop(stream); // close the connection
+
+        let num_entries_logged3 = num_entries_in_log();
+
+        /* ---[ AER 4: no new entries, commit-idx bumped to 6 ]--- */
+        stream = TcpStream::connect(addr);
+        terms = vec!(2);
+        indexes = Vec::new();  // empty vec, so this is a heartbeat msg
+        let prev_log_idx = 7u64;
+        let prev_log_term = 2u64;
+        let commit_idx = 6;
+        let logentries4: Vec<LogEntry> = send_aereqs_with_commit_idx(&mut stream, indexes, terms, prev_log_idx, prev_log_term, commit_idx);
+        let result4 = stream.read_to_str();
+        drop(stream); // close the connection
+
+        let num_entries_logged4 = num_entries_in_log();
+
+        /* ---[ AER 5: 2 new entries, commit-idx bumped to 10, one higher than curr idx ]--- */
+        stream = TcpStream::connect(addr);
+        terms = vec!(2, 2);
+        indexes = vec!(8, 9);
+        let prev_log_idx = 7u64;
+        let prev_log_term = 2u64;
+        let commit_idx = 10;  // higher than entries in current log => follower should only go to 9
+        let logentries5: Vec<LogEntry> = send_aereqs_with_commit_idx(&mut stream, indexes, terms, prev_log_idx, prev_log_term, commit_idx);
+        let result5 = stream.read_to_str();
+        drop(stream); // close the connection
+
+        let num_entries_logged5 = num_entries_in_log();
+        
+        signal_shutdown();  // TODO: is there a better way to ensure a fn is called if an assert fails?
+
+        /* ---[ validate ]--- */
+
+        // number sent
+        assert_eq!(2, logentries1.len());
+        assert_eq!(1, logentries2.len());
+        assert_eq!(4, logentries3.len());
+        assert_eq!(0, logentries4.len());
+        assert_eq!(2, logentries5.len());
+
+        // number in logfile after each AER
+        assert_eq!(2, num_entries_logged1);
+        assert_eq!(3, num_entries_logged2);
+        assert_eq!(7, num_entries_logged3);
+        assert_eq!(7, num_entries_logged4);
+        assert_eq!(9, num_entries_logged5);
+
+        // result 1
+        assert!(result1.is_ok());
+        let resp = result1.unwrap();
+
+        assert!(resp.contains("\"success\":true"));
+        let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
+        assert_eq!(true, aeresp.success);
+        assert_eq!(1, aeresp.term);
+        assert_eq!(2, aeresp.idx);
+        assert_eq!(super::UNKNOWN, aeresp.commit_idx);  // key test
+
+        // result 2
+        assert!(result2.is_ok());
+        let resp = result2.unwrap();
+
+        assert!(resp.contains("\"success\":true"));
+        let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
+        assert_eq!(true, aeresp.success);
+        assert_eq!(2, aeresp.term);
+        assert_eq!(3, aeresp.idx);
+        assert_eq!(2, aeresp.commit_idx);  // key test => should match what leader indicated
+
+        // result 3
+        assert!(result3.is_ok());
+        let resp = result3.unwrap();
+
+        assert!(resp.contains("\"success\":true"));
+        let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
+        assert_eq!(true, aeresp.success);
+        assert_eq!(2, aeresp.term);
+        assert_eq!(7, aeresp.idx);
+        assert_eq!(2, aeresp.commit_idx);  // key test => should match what leader indicated
+
+        // result 4
+        assert!(result4.is_ok());
+        let resp = result4.unwrap();
+
+        assert!(resp.contains("\"success\":true"));
+        let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
+        assert_eq!(true, aeresp.success);
+        assert_eq!(2, aeresp.term);
+        assert_eq!(7, aeresp.idx);
+        assert_eq!(6, aeresp.commit_idx);  // key test => should match what leader indicated
+        
+        // result 5
+        assert!(result5.is_ok());
+        let resp = result5.unwrap();
+
+        assert!(resp.contains("\"success\":true"));
+        let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
+        assert_eq!(true, aeresp.success);
+        assert_eq!(2, aeresp.term);
+        assert_eq!(9, aeresp.idx);
+        assert_eq!(9, aeresp.commit_idx);  // key test => 9, not 10 (as leader said)
+        
+        tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
+    }
 }
