@@ -17,7 +17,7 @@ use serialize::json;
 
 // use std::comm::{Empty, Data, Disconnected};
 
-use schooner::append_entries;
+use schooner::{append_entries, peer};
 use schooner::append_entries::AppendEntriesResponse;
 use schooner::log::Log;
 use schooner::peer::Peer;
@@ -75,22 +75,36 @@ pub struct Event {
 }
 
 /* ---[ Server impl ]--- */
+fn get_peer(peers: &Vec<Peer>, id: uint) -> Option<Peer> {
+    for p in peers.iter() {
+        if p.id == id {
+            return Some(p.clone());
+        }
+    }
+    None
+}
 
 impl Server {
-    pub fn new(id: uint, logpath: Path, ipaddr: ~str, tcpport: uint) -> IoResult<~Server> {
+    pub fn new(id: uint, cfgpath: Path, logpath: Path) -> IoResult<~Server> {
 
         let (ch, pt): (Sender<~Event>, Receiver<~Event>) = channel();
         let lg = try!(Log::new(logpath.clone()));
-
+        let peers: Vec<Peer> = try!(peer::parse_config(cfgpath.clone()));
+        let this = get_peer(&peers, id);
+        if this.is_none() {
+            fail!("Server::new: Id {} is not in the config file {}", id, cfgpath.display());
+        }
+        let this = this.unwrap();
+        
         let s = ~Server {
-            ip: ipaddr,
-            tcpport: tcpport,  // TODO: could we use udp instead? are we doing our own ACKs at the app protocol level?
-            id: id,
+            id: this.id,
+            ip: this.ip.to_owned(),
+            tcpport: this.tcpport,  // TODO: could we use udp instead? are we doing our own ACKs at the app protocol level?
             state: Stopped,
             log: lg,
             commit_idx: UNKNOWN,  // commit_idx 0 = UNKNOWN
             last_applied_commit: UNKNOWN,
-            peers: Vec::with_capacity(5),
+            peers: peers,
             leader: -1,          // -1 means no leader at present
             c: ch,
             p: pt,
@@ -371,7 +385,7 @@ mod test {
     extern crate serialize;
 
     use std::io;
-    use std::io::{BufferedReader,File,IoResult};
+    use std::io::{BufferedReader,File,IoResult,Open,Write};
     use std::io::fs;
     use std::io::net::ip::SocketAddr;
     use std::io::net::tcp::TcpStream;
@@ -386,11 +400,26 @@ mod test {
 
     static S1TEST_DIR    : &'static str = "datalog";         // '
     static S1TEST_PATH   : &'static str = "datalog/S1TEST";  // '
+    static S1TEST_CFG    : &'static str = "server.test.config";  // '
     static S1TEST_IPADDR : &'static str = "127.0.0.1";       // '
     static S1TEST_PORT   : uint         = 23158;
 
+    fn write_config(id: uint) -> Path {
+        let path = Path::new(S1TEST_CFG);
+        let mut file = File::open_mode(&path, Open, Write).unwrap();
+
+        let entry = format!("peer.{}.addr = 127.0.0.1:{}", id, S1TEST_PORT);
+
+        let result = file.write_line(entry);
+        if result.is_err() {
+            fail!("write_config write_line fail: {}", result.unwrap_err());
+        }
+        path
+    }
+    
     fn setup() -> ~super::Server {
         let id = 1;
+        let cfgpath = write_config(id);
         let dirpath = Path::new(S1TEST_DIR);
         let filepath = Path::new(S1TEST_PATH);
 
@@ -403,7 +432,7 @@ mod test {
             assert!(fs_res.is_ok());
         }
 
-        let result = super::Server::new(id, filepath, S1TEST_IPADDR.to_owned(), S1TEST_PORT);
+        let result = super::Server::new(id, cfgpath, filepath);
         if result.is_err() {
             fail!("{:?}", result.err());
         }
@@ -427,6 +456,8 @@ mod test {
     fn tear_down() {
         let filepath = Path::new(S1TEST_PATH);
         let _ = fs::unlink(&filepath);
+        let cfgpath = Path::new(S1TEST_CFG);
+        let _ = fs::unlink(&cfgpath);
     }
 
     fn launch_server() -> SocketAddr {
