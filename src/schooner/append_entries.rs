@@ -7,12 +7,12 @@ use schooner::log_entry::LogEntry;
 
 #[deriving(Decodable, Encodable, Clone)]
 pub struct AppendEntriesRequest {
-    pub term: u64,
+    pub term: u64,          // current term of leader
     pub prev_log_idx: u64,  // last log idx in leader's log
     pub prev_log_term: u64, // last log term in leader's log
     pub commit_idx: u64,    // last idx of log committed to leader's state machine
-    pub leader_id: uint,
-    pub entries: Vec<LogEntry>,
+    pub leader_id: uint,    // id for leader (based on config file)
+    pub entries: Vec<LogEntry>, // entries to log; may be empty (hearbeat msg)
 }
 
 
@@ -24,6 +24,7 @@ pub struct AppendEntriesResponse {
     // required by Raft protocol
     pub success: bool,   // whether follower has agreed to log entries in last AEReq
     pub term: u64,       // term of last log entry in follower's log
+
     // additional Schooner info
     pub idx: u64,        // idx of last log entry in follower's log after processing last AEReq
     pub commit_idx: u64, // idx of last log entry committed in follower's log after processing last AEReq
@@ -106,7 +107,7 @@ mod test {
         let logentry2 = LogEntry{idx: 156, term: 2, data: ~"ps -ef", uuid: ~"uuid222"};
         let logentry3 = LogEntry{idx: 157, term: 2, data: ~"", uuid: ~""};
         let entries = vec!(logentry1, logentry2, logentry3);
-        let aereq = super::AppendEntriesRequest{term: 66, 
+        let aereq = super::AppendEntriesRequest{term: 66,
                                                 prev_log_idx: 13,
                                                 prev_log_term: 1,
                                                 commit_idx: 88,

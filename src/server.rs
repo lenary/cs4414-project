@@ -18,7 +18,7 @@ use serialize::json;
 // use std::comm::{Empty, Data, Disconnected};
 
 use schooner::{append_entries, peer};
-use schooner::append_entries::AppendEntriesResponse;
+use schooner::append_entries::{AppendEntriesRequest,AppendEntriesResponse};
 use schooner::log::Log;
 use schooner::peer::Peer;
 use serror::{InvalidState,SError};
@@ -29,8 +29,9 @@ pub mod serror;  // TODO: move to schooner dir
 // static DEFAULT_HEARTBEAT_INTERVAL: uint = 50;   // in millis
 // static DEFAULT_ELECTION_TIMEOUT  : uint = 150;  // in millis
 static STOP_MSG: &'static str = "STOP";   // '
-static UNKNOWN: u64 = 0u64; 
-    
+static UNKNOWN: u64     = 0u64;
+static UNKNOWN_LDR: int = -1;
+
 /* ---[ data structures ]--- */
 
 #[deriving(Clone, Eq)]
@@ -47,7 +48,7 @@ pub struct Server {
     ip: ~str,
     tcpport: uint,
     id: uint,
-    
+
     state: State,
 
     // TODO: should this just be Log (on stack => can it be copied arnd?)
@@ -59,7 +60,7 @@ pub struct Server {
 
     peers: Vec<Peer>,          // peer servers
     leader: int,               // pointer to peer that is current leader (might be self)  // TODO: this should be &Peer, but not sure how to do that in a Rust struct yet => do later
-    
+
     c: Sender<~Event>,  // TODO: keep chan or port?
     p: Receiver<~Event>,
 
@@ -95,7 +96,7 @@ impl Server {
             fail!("Server::new: Id {} is not in the config file {}", id, cfgpath.display());
         }
         let this = this.unwrap();
-        
+
         let s = ~Server {
             id: this.id,
             ip: this.ip.to_owned(),
@@ -105,7 +106,7 @@ impl Server {
             commit_idx: UNKNOWN,  // commit_idx 0 = UNKNOWN
             last_applied_commit: UNKNOWN,
             peers: peers,
-            leader: -1,          // -1 means no leader at present
+            leader: UNKNOWN_LDR,
             c: ch,
             p: pt,
         };
@@ -177,7 +178,7 @@ impl Server {
 
             } else if ret == pt.id() {
                 let ev = pt.recv();
-                println!("follower: event message: {}", ev.msg);
+                debug!("follower: event message: {}", ev.msg);
                 if is_stop_msg(ev.msg) {
                     println!("FLW: DEBUG 2");
                     self.state = Stopped;
@@ -189,7 +190,7 @@ impl Server {
                         fail!("ERROR: Unable to decode msg into append_entry_request: {:?}.\nError is: {:?}", ev.msg, result.err());
                     }
                     let aereq = result.unwrap();
-
+                    self.leader = get_leader_ptr(&aereq, &self.peers); // update leader based on each AEReq
                     let aeresp = match self.log.append_entries(&aereq) {
                         Ok(_)  => {
                             // from the Raft spec: adjust commit_idx only if you accepted the AEReq
@@ -237,6 +238,21 @@ impl Server {
 /* ---[ functions ]--- */
 
 ///
+/// Iterates through the Peers Vec to find the array idx of the peer
+/// that has the leader_id in the AEReq.  If no peer matches the leader_id
+/// in AEReq, UNKNOWN_LDR (-1) is returned.
+///
+fn get_leader_ptr(aereq: &AppendEntriesRequest, peers: &Vec<Peer>) -> int {
+    for i in range(0, peers.len()) {
+        if peers.get(i).id == aereq.leader_id {
+            return i as int;
+        }
+    }
+    debug!("server.get_leader_ptr: no peer has id {}", aereq.leader_id);
+    UNKNOWN_LDR
+}
+
+///
 /// Expects content-length string of format
 ///   `Length: NN`
 /// where NN is an integer >= 0.
@@ -265,8 +281,7 @@ fn read_network_msg(stream: TcpStream) -> IoResult<~str> {
     if result.is_none() {
         return Err(IoError{kind: InvalidInput,
                            desc: "Length not parsable in network message",
-                           detail: Some(format!("length line parsed: {:s}", length_hdr))
-                          });
+                           detail: Some(format!("length line parsed: {:s}", length_hdr))});
     }
     let length = result.unwrap();
     println!("** CL: {:u}", length);  // TODO: remove
@@ -296,7 +311,7 @@ fn read_network_msg(stream: TcpStream) -> IoResult<~str> {
 /// The serve_loop will read from that channel and process the Event.
 /// Events can be any incoming information, such as STOP messages, AEReqs, AEResponses or client commands (???) => not yet implemented
 /// chan: Event channel in the Server struct.
-/// 
+///
 fn network_listener(conx_str: ~str, chan: Sender<~Event>) {
     let addr = from_str::<SocketAddr>(conx_str).expect("Address error.");
     let mut acceptor = TcpListener::bind(addr).unwrap().listen();
@@ -305,7 +320,7 @@ fn network_listener(conx_str: ~str, chan: Sender<~Event>) {
     // TODO: document what this channel is for
     let (chsend, chrecv): (Sender<~str>, Receiver<~str>) = channel();
     let mut stop_signalled = false;
-    
+
     for stream in acceptor.incoming() {
         println!("NL: DEBUG 0");
 
@@ -326,7 +341,7 @@ fn network_listener(conx_str: ~str, chan: Sender<~Event>) {
 
                     // Once the Event is sent to serve-loop task it awaits a response (string)
                     // and the response will be send back to the network caller.
-                    // Since the response is just a string, all logic of what is in the request 
+                    // Since the response is just a string, all logic of what is in the request
                     // & response is handled by the serve-loop
                     let resp = chrecv.recv();
                     println!("NL: sending response: {:?}", resp);
@@ -363,7 +378,7 @@ fn main() {
     // let port = 23158;
 
     let peer_cfg_path = Path::new(~"???");
-    
+
     // let result = Server::new(id, path, ipaddr, port, peer_cfg_path);
     // if result.is_err() {
     //     error!("{:?}", result.err());
@@ -416,7 +431,7 @@ mod test {
         }
         path
     }
-    
+
     fn setup() -> ~super::Server {
         let id = 1;
         let cfgpath = write_config(id);
@@ -475,7 +490,7 @@ mod test {
     ///
     /// To specify an AEReq with no entries (hearbeat), pass in an idx_vec of size 0 and a term_vec of size 1 (need curr term)
     /// Otherwise, idx_vec.len() == term_vec() must be true.
-    /// 
+    ///
     fn send_aereqs_with_commit_idx(stream: &mut IoResult<TcpStream>, idx_vec: Vec<u64>, term_vec: Vec<u64>,
                                    prev_log_idx: u64, prev_log_term: u64, commit_idx: u64) -> Vec<LogEntry> {
 
@@ -486,7 +501,7 @@ mod test {
         let mut entries = Vec::with_capacity(term_vec.len());
         if idx_vec.len() > 0 {
             let mut it = idx_vec.iter().zip(term_vec.iter());
-            
+
             // loop and create number of LogEntries requested
             for (idx, term) in it {
                 let uuidstr = Uuid::new_v4().to_hyphenated_str();
@@ -496,7 +511,7 @@ mod test {
                     data: format!("inventory.widget.count = {}", 100 - *idx as u64),
                     uuid: format!("uuid-{}", uuidstr),
                 };
-                
+
                 entries.push(entry);
             }
         }
@@ -969,7 +984,7 @@ mod test {
         drop(stream); // close the connection
 
         let num_entries_logged5 = num_entries_in_log();
-        
+
         signal_shutdown();  // TODO: is there a better way to ensure a fn is called if an assert fails?
 
         /* ---[ validate ]--- */
@@ -1031,7 +1046,7 @@ mod test {
         assert_eq!(2, aeresp.term);
         assert_eq!(7, aeresp.idx);
         assert_eq!(6, aeresp.commit_idx);  // key test => should match what leader indicated
-        
+
         // result 5
         assert!(result5.is_ok());
         let resp = result5.unwrap();
@@ -1042,7 +1057,7 @@ mod test {
         assert_eq!(2, aeresp.term);
         assert_eq!(9, aeresp.idx);
         assert_eq!(9, aeresp.commit_idx);  // key test => 9, not 10 (as leader said)
-        
+
         tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
     }
 }
