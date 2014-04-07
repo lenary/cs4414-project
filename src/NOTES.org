@@ -1,7 +1,10 @@
+* TODO Add in concept of peers
+* TODO If a follower gets a client request, does it have the information needed to send it to the leader?
+
 # 05-Apr
 * Starting to add stateMachine (goraft useless as usual)
-* QUESTION How does a follow know the commit_idx at startup?
-* QUESTION Does the commit_idx need to be written to disk somewhere? Or is it assumed to be the prev_log_idx and revised as more information comes in?
+* DONE How does a follow know the commit_idx at startup?
+* DONE Does the commit_idx need to be written to disk somewhere? Or is it assumed to be the prev_log_idx and revised as more information comes in?
 
 # 22-Mar
 * Have implemented truncate and tests passing.

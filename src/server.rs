@@ -20,6 +20,7 @@ use serialize::json;
 use schooner::append_entries;
 use schooner::append_entries::AppendEntriesResponse;
 use schooner::log::Log;
+use schooner::peer::Peer;
 use serror::{InvalidState,SError};
 
 pub mod schooner;
@@ -42,9 +43,11 @@ pub enum State {
 }
 
 pub struct Server {
+    // TODO: should these three fields move to a Peer that represents "self" ?
     ip: ~str,
     tcpport: uint,
     id: uint,
+    
     state: State,
 
     // TODO: should this just be Log (on stack => can it be copied arnd?)
@@ -53,9 +56,13 @@ pub struct Server {
     // stateMachine state
     commit_idx: u64,           // idx of highest log entry known to be committed across servers
     last_applied_commit: u64,  // idx of highest log entry applied locally (may not yet be committed on other servers)
+
+    peers: Vec<Peer>,          // peer servers
+    leader: int,               // pointer to peer that is current leader (might be self)  // TODO: this should be &Peer, but not sure how to do that in a Rust struct yet => do later
     
     c: Sender<~Event>,  // TODO: keep chan or port?
     p: Receiver<~Event>,
+
     // more later
 }
 
@@ -67,7 +74,7 @@ pub struct Event {
     ch: Sender<~str>,
 }
 
-/* ---[ functions ]--- */
+/* ---[ Server impl ]--- */
 
 impl Server {
     pub fn new(id: uint, logpath: Path, ipaddr: ~str, tcpport: uint) -> IoResult<~Server> {
@@ -81,8 +88,10 @@ impl Server {
             id: id,
             state: Stopped,
             log: lg,
-            commit_idx: UNKNOWN,   // commit_idx 0 = UNKNOWN
+            commit_idx: UNKNOWN,  // commit_idx 0 = UNKNOWN
             last_applied_commit: UNKNOWN,
+            peers: Vec::with_capacity(5),
+            leader: -1,          // -1 means no leader at present
             c: ch,
             p: pt,
         };
@@ -95,8 +104,6 @@ impl Server {
     /// Two tasks/threads are in operation:
     /// - a network-listener task is spawned and
     /// - the current task goes into the server_loop until a STOP signal is received
-    /// TODO: need to have the network listener take a "stop" chan or perhaps pass stop messages
-    ///       as an Event on the event chan
     ///
     pub fn run(&mut self) -> Result<(), SError> {
         if self.state != Stopped {
@@ -127,9 +134,9 @@ impl Server {
                 Snapshotting => self.snapshotting_loop(),
                 Stopped      => break
             }
-            std::io::timer::sleep(1);
+            std::io::timer::sleep(1);  // TODO: why is this here? put behind a debug flag?
         }
-        println!("Serve_loop END");
+        debug!("Serve_loop END");  // TODO: change to debug!
     }
 
     fn follower_loop(&mut self) {
@@ -211,6 +218,9 @@ impl Server {
         self.state = Follower;
     }
 }
+
+
+/* ---[ functions ]--- */
 
 ///
 /// Expects content-length string of format
@@ -331,24 +341,26 @@ fn is_stop_msg(s: &str) -> bool {
     s == STOP_MSG
 }
 
-
+// TODO: need to implement this
 fn main() {
-    let id = 1;
-    let path = Path::new(~"datalog/S1");
-    let ipaddr = ~"127.0.0.1";
-    let port = 23158;
+    // let id = 1;
+    // let path = Path::new(~"datalog/S1");
+    // let ipaddr = ~"127.0.0.1";
+    // let port = 23158;
 
-    let result = Server::new(id, path, ipaddr, port);
-    if result.is_err() {
-        error!("{:?}", result.err());
-        return;
-    }
+    let peer_cfg_path = Path::new(~"???");
+    
+    // let result = Server::new(id, path, ipaddr, port, peer_cfg_path);
+    // if result.is_err() {
+    //     error!("{:?}", result.err());
+    //     return;
+    // }
 
-    let mut s = result.unwrap();
-    match s.run() {
-        Ok(_) => (),
-        Err(e) => println!("ERROR: {:?}", e)
-    }
+    // let mut s = result.unwrap();
+    // match s.run() {
+    //     Ok(_) => (),
+    //     Err(e) => println!("ERROR: {:?}", e)
+    // }
 }
 
 
