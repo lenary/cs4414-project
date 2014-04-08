@@ -76,14 +76,6 @@ pub struct Event {
 }
 
 /* ---[ Server impl ]--- */
-fn get_peer(peers: &Vec<Peer>, id: uint) -> Option<Peer> {
-    for p in peers.iter() {
-        if p.id == id {
-            return Some(p.clone());
-        }
-    }
-    None
-}
 
 impl Server {
     pub fn new(id: uint, cfgpath: Path, logpath: Path) -> IoResult<~Server> {
@@ -154,12 +146,13 @@ impl Server {
         debug!("Serve_loop END");  // TODO: change to debug!
     }
 
+
     fn follower_loop(&mut self) {
         let mut timer = Timer::new().unwrap();
 
         loop {
             println!("FLW: DEBUG 0");
-            let timeout = timer.oneshot(1000); // use for detecting lost leader
+            let timeout = timer.oneshot(1000); // use for detecting lost leader  // TODO: adjust this time
 
             let sel = Select::new();
             let mut pt = sel.handle(&self.p);
@@ -176,13 +169,17 @@ impl Server {
                 self.state = Candidate;
                 break;
 
-            } else if ret == pt.id() {
+            } else if ret == pt.id() {  // received event from network_listener
                 let ev = pt.recv();
                 debug!("follower: event message: {}", ev.msg);
                 if is_stop_msg(ev.msg) {
                     println!("FLW: DEBUG 2");
                     self.state = Stopped;
                     break;
+
+                } else if is_cmd_from_client(ev.msg) {  // redirect to leader
+                    debug!("redirecting client to leader");
+                    ev.ch.send( self.redirect_msg() );
 
                 } else {
                     let result = append_entries::decode_append_entries_request(ev.msg);
@@ -232,10 +229,48 @@ impl Server {
         println!("snapshotting loop");
         self.state = Follower;
     }
+
+    ///
+    /// For cases where a client needs to be redirected to the Schooner leader
+    /// this returns the redirect message of format:
+    /// 'Length: n\nRedirect: ipaddr:port\n'
+    /// where 'n' is the length of the message starting from 'Redirect' to the end.
+    /// If the leader is not known, this redirects the client to some other server
+    /// that may know.
+    ///
+    fn redirect_msg(&self) -> ~str {
+        let mut ldx = self.leader as uint;
+        // if leader is unknown then pick one of the peers that is not you
+        if self.leader == UNKNOWN_LDR {
+            ldx = (get_peer_idx(&self.peers, self.id) + 1) as uint % self.peers.len();
+        }
+        let ldr = self.peers.get(ldx);
+        let redir_msg = format!("Redirect: {}:{:u}\n", &ldr.ip, ldr.tcpport);
+        format!("Length: {}\n{}", redir_msg.len(), redir_msg)
+    }
 }
 
 
 /* ---[ functions ]--- */
+
+fn get_peer(peers: &Vec<Peer>, id: uint) -> Option<Peer> {
+    for p in peers.iter() {
+        if p.id == id {
+            return Some(p.clone());
+        }
+    }
+    None
+}
+
+fn get_peer_idx(peers: &Vec<Peer>, id: uint) -> int {
+    for i in range(0, peers.len()) {
+        if peers.get(0).id == id {
+            return i as int;
+        }
+    }
+    -1
+}
+
 
 ///
 /// Iterates through the Peers Vec to find the array idx of the peer
@@ -250,6 +285,11 @@ fn get_leader_ptr(aereq: &AppendEntriesRequest, peers: &Vec<Peer>) -> int {
     }
     debug!("server.get_leader_ptr: no peer has id {}", aereq.leader_id);
     UNKNOWN_LDR
+}
+
+
+fn is_cmd_from_client(msg: &str) -> bool {
+    msg.trim().starts_with("PUT ")
 }
 
 ///
@@ -273,6 +313,9 @@ fn parse_content_length(len_line: &str) -> Option<uint> {
     from_str::<uint>(lenstr)
 }
 
+///
+/// TODO: can this fn deal with HTTP style requests? If not, what should the client request look like for this to work?
+///
 fn read_network_msg(stream: TcpStream) -> IoResult<~str> {
     let mut reader = BufferedReader::new(stream);
 
@@ -333,7 +376,7 @@ fn network_listener(conx_str: ~str, chan: Sender<~Event>) {
                 chan.send(ev);
 
                 if is_stop_msg(input) {
-                    stop_signalled = true;
+                    stop_signalled = true;  // TODO: do I need to set this bool var or can I just break out here?
                     println!("NL: DEBUG 1: was stop msg");
 
                 } else {
@@ -410,6 +453,7 @@ mod test {
     use serialize::json;
     use uuid::Uuid;
 
+    use super::Server;
     use schooner::append_entries::AppendEntriesRequest;
     use schooner::log_entry::LogEntry;
 
@@ -418,23 +462,25 @@ mod test {
     static S1TEST_CFG    : &'static str = "server.test.config";  // '
     static S1TEST_IPADDR : &'static str = "127.0.0.1";       // '
     static S1TEST_PORT   : uint         = 23158;
+    static LEADER_ID     : uint         = 4;
 
-    fn write_config(id: uint) -> Path {
+    fn write_config() -> Path {
         let path = Path::new(S1TEST_CFG);
         let mut file = File::open_mode(&path, Open, Write).unwrap();
 
-        let entry = format!("peer.{}.addr = 127.0.0.1:{}", id, S1TEST_PORT);
-
-        let result = file.write_line(entry);
-        if result.is_err() {
-            fail!("write_config write_line fail: {}", result.unwrap_err());
+        for i in range(0u, 5u) {
+            let entry = format!("peer.{}.addr = 127.0.0.1:{}", i + 1, S1TEST_PORT + i);
+            let result = file.write_line(entry);
+            if result.is_err() {
+                fail!("write_config write_line fail: {}", result.unwrap_err());
+            }
         }
+
         path
     }
 
-    fn setup() -> ~super::Server {
-        let id = 1;
-        let cfgpath = write_config(id);
+    fn setup() -> ~Server {
+        let cfgpath = write_config();
         let dirpath = Path::new(S1TEST_DIR);
         let filepath = Path::new(S1TEST_PATH);
 
@@ -447,6 +493,7 @@ mod test {
             assert!(fs_res.is_ok());
         }
 
+        let id = 1;  // this server has id 1
         let result = super::Server::new(id, cfgpath, filepath);
         if result.is_err() {
             fail!("{:?}", result.err());
@@ -521,7 +568,7 @@ mod test {
             prev_log_idx: prev_log_idx,
             prev_log_term: prev_log_term,
             commit_idx: commit_idx,
-            leader_id: 100,
+            leader_id: LEADER_ID,
             entries: entries.clone(),
         };
 
@@ -547,6 +594,13 @@ mod test {
         send_aereqs_with_commit_idx(stream, idx_vec, term_vec, prev_log_idx, prev_log_term, commit_idx)
     }
 
+    fn send_client_cmd(stream: &mut IoResult<TcpStream>, cmd: ~str) -> IoResult<()> {
+        let msg = format!("Length: {}\n{}", cmd.len(), cmd);
+        try!(stream.write_str(msg));
+        try!(stream.flush());
+        Ok(())
+    }
+
     // meant for sending a single AERequest
     fn send_aereq1(stream: &mut IoResult<TcpStream>) -> LogEntry {
         /* ---[ prepare and send request ]--- */
@@ -563,7 +617,7 @@ mod test {
             prev_log_idx: 0,
             prev_log_term: 0,
             commit_idx: 0,
-            leader_id: 100,
+            leader_id: LEADER_ID,
             entries: entries,
         };
 
@@ -591,6 +645,66 @@ mod test {
     }
 
     /* ---[ tests ]--- */
+
+    #[test]
+    fn test_follower_to_send_client_redirect_when_leader_is_unknown() {
+        // launch server => this will not shutdown until a STOP signal is sent
+        let addr = launch_server();
+        let mut stream = TcpStream::connect(addr);
+        let send_result = send_client_cmd(&mut stream, ~"PUT x=1");
+        if send_result.is_err() {
+            signal_shutdown();
+            fail!(send_result);
+        }
+
+        let result = stream.read_to_str();
+        drop(stream); // close the connection
+
+        signal_shutdown();
+
+        println!("{:?}", result);
+        assert!(result.is_ok());
+        let resp = result.unwrap();
+
+        assert!(resp.contains("Redirect: 127.0.0.1:23159"));
+
+        tear_down();
+    }
+
+    #[test]
+    fn test_follower_to_send_client_redirect_when_leader_is_known() {
+        // launch server => this will not shutdown until a STOP signal is sent
+        let addr = launch_server();
+        let mut stream = TcpStream::connect(addr);
+
+        // this message lets the follower know who the leader is (LEADER_ID = 4)
+        let _ = send_aereq1(&mut stream);
+        let result1 = stream.read_to_str();
+        drop(stream); // close the connection
+
+
+        // client cmd to follower => now should get back leader
+        stream = TcpStream::connect(addr);
+        let send_result = send_client_cmd(&mut stream, ~"PUT x=1");
+        if send_result.is_err() {
+            signal_shutdown();
+            fail!(send_result);
+        }
+        let result2 = stream.read_to_str();
+
+        drop(stream); // close the connection
+
+        signal_shutdown();  // TODO: is there a better way to ensure a fn is called if an assert fails?
+
+        println!("{:?}", result2);
+        assert!(result1.is_ok());
+        assert!(result2.is_ok());
+        let resp = result2.unwrap();
+
+        assert!(resp.contains(format!("Redirect: 127.0.0.1:{}", 23158 + LEADER_ID - 1))); // port should be 23161
+
+        tear_down();
+    }
 
     #[test]
     fn test_follower_with_single_AppendEntryRequest() {
