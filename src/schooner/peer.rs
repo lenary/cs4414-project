@@ -1,7 +1,8 @@
 use std::io::{BufferedReader, File, InvalidInput, IoError, IoResult};
 use std::vec::Vec;
 
-#[deriving(Clone)]
+// #[deriving(Clone,ToStr,Rand)]
+#[deriving(Clone, Show)]
 pub struct Peer {
     pub id: uint,
     pub ip: ~str,

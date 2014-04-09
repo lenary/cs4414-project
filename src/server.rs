@@ -1,6 +1,8 @@
 #![feature(phase)]
+extern crate collections;
 #[phase(syntax, link)]
 extern crate log;
+extern crate rand;
 extern crate serialize;
 extern crate sync;
 extern crate uuid;
@@ -12,6 +14,8 @@ use std::io::net::ip::SocketAddr;
 use std::io::net::tcp::{TcpListener,TcpStream};
 use std::vec::Vec;
 
+use collections::hashmap::HashMap;
+use rand::{task_rng, Rng};
 use serialize::json;
 
 
@@ -83,21 +87,29 @@ impl Server {
         let (ch, pt): (Sender<~Event>, Receiver<~Event>) = channel();
         let lg = try!(Log::new(logpath.clone()));
         let peers: Vec<Peer> = try!(peer::parse_config(cfgpath.clone()));
-        let this = get_peer(&peers, id);
-        if this.is_none() {
+        let myidx = get_peer_idx(&peers, id);
+        if myidx == -1 {
             fail!("Server::new: Id {} is not in the config file {}", id, cfgpath.display());
         }
-        let this = this.unwrap();
+        let myidx = myidx as uint;
+        let myid = peers.get(myidx).id;
+        let myip = peers.get(myidx).ip.to_owned();
+        let mytcpport = peers.get(myidx).tcpport;
+
+        // remove self from list of peers
+        let other_peers: Vec<Peer> = peers.iter().filter_map( |pr| if pr.id != myid { Some(pr.clone()) } else {None} ).collect();
+
+        assert_eq!(peers.len(), other_peers.len() + 1);
 
         let s = ~Server {
-            id: this.id,
-            ip: this.ip.to_owned(),
-            tcpport: this.tcpport,  // TODO: could we use udp instead? are we doing our own ACKs at the app protocol level?
+            id: myid,
+            ip: myip,
+            tcpport: mytcpport,  // TODO: could we use udp instead? are we doing our own ACKs at the app protocol level?
             state: Stopped,
             log: lg,
             commit_idx: UNKNOWN,  // commit_idx 0 = UNKNOWN
             last_applied_commit: UNKNOWN,
-            peers: peers,
+            peers: other_peers,
             leader: UNKNOWN_LDR,
             c: ch,
             p: pt,
@@ -223,11 +235,49 @@ impl Server {
 
     fn leader_loop(&mut self) {
         println!("leader loop");
+
+        let mut timer = Timer::new().unwrap();
+        // FIXME: this needs to be in a loop
+        let timeout = timer.oneshot(100); // frequency of heartbeat to followers  // TODO: parameterize this time
+        timeout.recv();
+
+        // TODO: make_aereq should return a string since sending strings to peer_handler tasks
+        let heartbeat_req = self.make_heartbeat_aereq();
+
+        // TODO: change this to a Vec<(peer.id, chsend)> and just search linearly through it => no need for full hashmap
+        //       or implement some simple ArrayHashMap like Clojure has
+        let mut peer_chans: HashMap<uint, Sender<~str>> = HashMap::new();
+
+        for p in self.peers.iter() {
+            let (chsend, chrecv): (Sender<~str>, Receiver<~str>) = channel();
+            peer_chans.insert(p.id, chsend);
+
+            // TODO: need to launch a separate task to handle each IO interaction with the followers
+
+            println!(">******************************** Would now signal: {:?}", p);
+        }
+
         self.state = Snapshotting;
     }
+
+    // TODO: what the hell is this state?  Got it from goraft => is it needed?
     fn snapshotting_loop(&mut self) {
         println!("snapshotting loop");
         self.state = Follower;
+    }
+
+    ///
+    /// Builds AEReq with no entries
+    ///
+    fn make_heartbeat_aereq(&self) -> AppendEntriesRequest {
+        AppendEntriesRequest {
+            term: self.log.term,
+            prev_log_idx: self.log.idx,
+            prev_log_term: self.log.term,
+            commit_idx: self.commit_idx,
+            leader_id: self.id,
+            entries: Vec::new()
+        }
     }
 
     ///
@@ -240,9 +290,9 @@ impl Server {
     ///
     fn redirect_msg(&self) -> ~str {
         let mut ldx = self.leader as uint;
-        // if leader is unknown then pick one of the peers that is not you
+        // if leader is unknown then pick one of the peers at random
         if self.leader == UNKNOWN_LDR {
-            ldx = (get_peer_idx(&self.peers, self.id) + 1) as uint % self.peers.len();
+            ldx = task_rng().gen_range(0u, self.peers.len());
         }
         let ldr = self.peers.get(ldx);
         let redir_msg = format!("Redirect: {}:{:u}\n", &ldr.ip, ldr.tcpport);
@@ -253,15 +303,11 @@ impl Server {
 
 /* ---[ functions ]--- */
 
-fn get_peer(peers: &Vec<Peer>, id: uint) -> Option<Peer> {
-    for p in peers.iter() {
-        if p.id == id {
-            return Some(p.clone());
-        }
-    }
-    None
-}
-
+///
+/// Searches through Vec<Peer> for the Peer with id 'id'
+/// and returns its index in the vector.  Returns -1 if
+/// no Peer with that id is found.
+///
 fn get_peer_idx(peers: &Vec<Peer>, id: uint) -> int {
     for i in range(0, peers.len()) {
         if peers.get(0).id == id {
@@ -666,7 +712,8 @@ mod test {
         assert!(result.is_ok());
         let resp = result.unwrap();
 
-        assert!(resp.contains("Redirect: 127.0.0.1:23159"));
+        assert!( resp.contains("Redirect: 127.0.0.1:231") );
+        assert!( !resp.contains("Redirect: 127.0.0.1:23158") );
 
         tear_down();
     }
