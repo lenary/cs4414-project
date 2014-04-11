@@ -17,8 +17,6 @@ use std::vec::Vec;
 use collections::hashmap::HashMap;
 use rand::{task_rng, Rng};
 use serialize::json;
-use uuid::Uuid;
-
 
 // use std::comm::{Empty, Data, Disconnected};
 
@@ -82,10 +80,16 @@ pub struct Event {
 }
 
 // TODO: may get rid of this once elections are set up
-// for providing special setup options to a server 
+// for providing special setup options to a server
 pub struct CfgOptions {
     init_state: State,
     // TODO: add more?
+}
+
+#[deriving(Clone, Show)]
+struct ClientMsg {
+    uuid: ~str,
+    cmd: ~str
 }
 
 /* ---[ Server impl ]--- */
@@ -142,7 +146,7 @@ impl Server {
             Some(cfg) => self.state = cfg.init_state,
             None => self.state = Follower
         }
-        
+
 
         let event_chan = self.c.clone();
         let conx_str = format!("{}:{:u}", &self.ip, self.tcpport);
@@ -285,9 +289,16 @@ impl Server {
             // }
             // break;
 
-        } else if is_cmd_from_client(ev.msg) {  // redirect to leader
+        } else if is_cmd_from_client(ev.msg) {
             println!("LDR: DEBUG 201: msg from client: {:?}", ev.msg);
-            ev.ch.send(~"200 OK");
+            match create_client_msg(&ev.msg) {
+                Some(clientMsg) => {
+                    let aereq = self.make_aereq(vec!(clientMsg));
+                    // TODO: need to send this message to the peer-handlers
+                    ev.ch.send(~"200 OK");
+                },
+                None => ev.ch.send(~"400 Bad Request")
+            }
         }
 
         // for now just stop after receiving one message
@@ -295,15 +306,15 @@ impl Server {
             let chsend: &Sender<~str> = peer_chans.get(&p.id);
             if self.state == Stopped {
                 chsend.send(~"STOP");
-            } 
+            }
         }
         self.state = Snapshotting;
     }
 
     // TODO: this could return a Future and send Future<bool> to indicate closing down
     ///
-    /// Runs in its own task and handles all leader->follower messaging for 
-    /// 
+    /// Runs in its own task and handles all leader->follower messaging for
+    ///
     fn leader_peer_handler(peer: Peer, chrecv: Receiver<~str>) {
         let msg = chrecv.recv();
         println!("{:?}", msg);
@@ -312,25 +323,25 @@ impl Server {
         }
         println!("PEER HANDLER FOR {:?} SHUTTING DOWN", peer.id);
     }
-    
+
     // TODO: what the hell is this state?  Got it from goraft => is it needed?
     fn snapshotting_loop(&mut self) {
         println!("snapshotting loop");
         self.state = Follower;
     }
-        
+
     ///
     /// Builds AEReq with no entries.
     /// Called by Leader to send AEReqs with followers
-    /// To send a heartbeat message, pass in an empty vector
+    /// To send a heartbeat message, pass in an empty vector.
     ///
-    fn make_aereq(&self, entry_msgs: Vec<~str>) -> AppendEntriesRequest {
+    fn make_aereq(&self, entry_msgs: Vec<ClientMsg>) -> AppendEntriesRequest {
         let mut entries: Vec<LogEntry> = Vec::with_capacity(entry_msgs.len());
-        for m in entry_msgs.move_iter() {
+        for cmsg in entry_msgs.move_iter() {
             let ent = LogEntry {idx: self.log.idx,
                                 term: self.log.term,
-                                data: m,
-                                uuid: Uuid::new_v4().to_hyphenated_str()};
+                                data: cmsg.cmd.clone(),
+                                uuid: cmsg.uuid};
             entries.push(ent);
         }
         AppendEntriesRequest {
@@ -340,9 +351,9 @@ impl Server {
             commit_idx: self.commit_idx,
             leader_id: self.id,
             entries: entries,
-        }        
+        }
     }
-        
+
     ///
     /// For cases where a client needs to be redirected to the Schooner leader
     /// this returns the redirect message of format:
@@ -397,8 +408,22 @@ fn get_leader_ptr(aereq: &AppendEntriesRequest, peers: &Vec<Peer>) -> int {
 }
 
 
+fn create_client_msg(msg: &~str) -> Option<ClientMsg> {
+    let parts: ~[&str] = msg.splitn('\n', 1).collect();
+    if parts.len() != 2 {
+        return None;
+    }
+
+    Some(ClientMsg {
+        uuid: parts[0].trim().to_owned(),
+        cmd:  parts[1].trim().to_owned()
+    })
+}
+
+
+
 fn is_cmd_from_client(msg: &str) -> bool {
-    msg.trim().starts_with("PUT ")
+    msg.trim().starts_with("Uuid: ")
 }
 
 ///
@@ -707,7 +732,9 @@ mod test {
     }
 
     fn send_client_cmd(stream: &mut IoResult<TcpStream>, cmd: ~str) -> IoResult<()> {
-        let msg = format!("Length: {}\n{}", cmd.len(), cmd);
+        let uuid = Uuid::new_v4().to_hyphenated_str();
+        let id_cmd = format!("Uuid: {}\n{}", uuid, cmd);
+        let msg = format!("Length: {}\n{}", id_cmd.len(), id_cmd);
         try!(stream.write_str(msg));
         try!(stream.flush());
         Ok(())
@@ -775,11 +802,11 @@ mod test {
 
         assert!(result.is_ok());
         assert_eq!(~"200 OK", result.unwrap());  // BOGUS tmp response
-        
+
         signal_shutdown();
         tear_down();
     }
-    
+
     #[test]
     fn test_follower_to_send_client_redirect_when_leader_is_unknown() {
         // launch server => this will not shutdown until a STOP signal is sent
