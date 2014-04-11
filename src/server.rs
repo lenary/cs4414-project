@@ -17,6 +17,7 @@ use std::vec::Vec;
 use collections::hashmap::HashMap;
 use rand::{task_rng, Rng};
 use serialize::json;
+use uuid::Uuid;
 
 
 // use std::comm::{Empty, Data, Disconnected};
@@ -24,6 +25,7 @@ use serialize::json;
 use schooner::{append_entries, peer};
 use schooner::append_entries::{AppendEntriesRequest,AppendEntriesResponse};
 use schooner::log::Log;
+use schooner::log_entry::LogEntry;
 use schooner::peer::Peer;
 use serror::{InvalidState,SError};
 
@@ -71,12 +73,19 @@ pub struct Server {
     // more later
 }
 
-// TODO: what is this for?
+// TODO: does this need to be enhanced?
 pub struct Event {
     msg: ~str,  // just to get started
     // target: ??,
     // return_val: ??,
     ch: Sender<~str>,
+}
+
+// TODO: may get rid of this once elections are set up
+// for providing special setup options to a server 
+pub struct CfgOptions {
+    init_state: State,
+    // TODO: add more?
 }
 
 /* ---[ Server impl ]--- */
@@ -124,12 +133,16 @@ impl Server {
     /// - a network-listener task is spawned and
     /// - the current task goes into the server_loop until a STOP signal is received
     ///
-    pub fn run(&mut self) -> Result<(), SError> {
+    pub fn run(&mut self, opt: Option<CfgOptions>) -> Result<(), SError> {
         if self.state != Stopped {
             return Err(InvalidState(~"schooner.Server: Server already running"));
         }
 
-        self.state = Follower;
+        match opt {
+            Some(cfg) => self.state = cfg.init_state,
+            None => self.state = Follower
+        }
+        
 
         let event_chan = self.c.clone();
         let conx_str = format!("{}:{:u}", &self.ip, self.tcpport);
@@ -234,52 +247,102 @@ impl Server {
     }
 
     fn leader_loop(&mut self) {
-        println!("leader loop");
+        println!("leader loop with id = {:?}", self.id);
 
         let mut timer = Timer::new().unwrap();
         // FIXME: this needs to be in a loop
         let timeout = timer.oneshot(100); // frequency of heartbeat to followers  // TODO: parameterize this time
         timeout.recv();
 
-        // TODO: make_aereq should return a string since sending strings to peer_handler tasks
-        let heartbeat_req = self.make_heartbeat_aereq();
-
         // TODO: change this to a Vec<(peer.id, chsend)> and just search linearly through it => no need for full hashmap
         //       or implement some simple ArrayHashMap like Clojure has
         let mut peer_chans: HashMap<uint, Sender<~str>> = HashMap::new();
 
+        // spawn the peer handler tasks
         for p in self.peers.iter() {
             let (chsend, chrecv): (Sender<~str>, Receiver<~str>) = channel();
             peer_chans.insert(p.id, chsend);
 
             // TODO: need to launch a separate task to handle each IO interaction with the followers
-
-            println!(">******************************** Would now signal: {:?}", p);
+            let peer = p.clone();
+            spawn(proc() {
+                // TODO: will need to send a chsend as well to message back (at least shutdown notices)
+                // TODO: put in logic to flw_handler that if no messages from papa after some timeout, to shutdown
+                Server::leader_peer_handler(peer, chrecv);
+            });
         }
 
+        // now wait for network msgs (or timeout -> need to add timeout)
+        // TODO: should be in loop
+        let ev = self.p.recv();
+        debug!("follower: event message: {}", ev.msg);
+        if is_stop_msg(ev.msg) {
+            println!("LDR: DEBUG 200");
+            self.state = Stopped;
+            // for p in self.peers.iter() {
+            //     let chsend: &Sender<~str> = peer_chans.get(&p.id);
+            //     chsend.send(~"STOP");
+            // }
+            // break;
+
+        } else if is_cmd_from_client(ev.msg) {  // redirect to leader
+            println!("LDR: DEBUG 201: msg from client: {:?}", ev.msg);
+            ev.ch.send(~"200 OK");
+        }
+
+        // for now just stop after receiving one message
+        for p in self.peers.iter() {
+            let chsend: &Sender<~str> = peer_chans.get(&p.id);
+            if self.state == Stopped {
+                chsend.send(~"STOP");
+            } 
+        }
         self.state = Snapshotting;
     }
 
+    // TODO: this could return a Future and send Future<bool> to indicate closing down
+    ///
+    /// Runs in its own task and handles all leader->follower messaging for 
+    /// 
+    fn leader_peer_handler(peer: Peer, chrecv: Receiver<~str>) {
+        let msg = chrecv.recv();
+        println!("{:?}", msg);
+        if msg == ~"STOP" {
+            println!("RECEIVED STOP MESSAGE for peer hdlr {:?}", peer.id);
+        }
+        println!("PEER HANDLER FOR {:?} SHUTTING DOWN", peer.id);
+    }
+    
     // TODO: what the hell is this state?  Got it from goraft => is it needed?
     fn snapshotting_loop(&mut self) {
         println!("snapshotting loop");
         self.state = Follower;
     }
-
+        
     ///
-    /// Builds AEReq with no entries
+    /// Builds AEReq with no entries.
+    /// Called by Leader to send AEReqs with followers
+    /// To send a heartbeat message, pass in an empty vector
     ///
-    fn make_heartbeat_aereq(&self) -> AppendEntriesRequest {
+    fn make_aereq(&self, entry_msgs: Vec<~str>) -> AppendEntriesRequest {
+        let mut entries: Vec<LogEntry> = Vec::with_capacity(entry_msgs.len());
+        for m in entry_msgs.move_iter() {
+            let ent = LogEntry {idx: self.log.idx,
+                                term: self.log.term,
+                                data: m,
+                                uuid: Uuid::new_v4().to_hyphenated_str()};
+            entries.push(ent);
+        }
         AppendEntriesRequest {
             term: self.log.term,
             prev_log_idx: self.log.idx,
             prev_log_term: self.log.term,
             commit_idx: self.commit_idx,
             leader_id: self.id,
-            entries: Vec::new()
-        }
+            entries: entries,
+        }        
     }
-
+        
     ///
     /// For cases where a client needs to be redirected to the Schooner leader
     /// this returns the redirect message of format:
@@ -499,7 +562,10 @@ mod test {
     use serialize::json;
     use uuid::Uuid;
 
+    use super::CfgOptions;
+    use super::Leader;
     use super::Server;
+
     use schooner::append_entries::AppendEntriesRequest;
     use schooner::log_entry::LogEntry;
 
@@ -568,10 +634,10 @@ mod test {
         let _ = fs::unlink(&cfgpath);
     }
 
-    fn launch_server() -> SocketAddr {
+    fn launch_server(opt: Option<CfgOptions>) -> SocketAddr {
         spawn(proc() {
             let mut server = setup();
-            match server.run() {
+            match server.run(opt) {
                 Ok(_) => (),
                 Err(e) => fail!("launch_server: ERROR: {:?}", e)
             }
@@ -691,11 +757,33 @@ mod test {
     }
 
     /* ---[ tests ]--- */
+    #[test]
+    fn test_leader_simple() {
+        let cfg = CfgOptions {
+            init_state: Leader
+        };
+        let addr = launch_server(Some(cfg));
+        let mut stream = TcpStream::connect(addr);
+        let send_result = send_client_cmd(&mut stream, ~"PUT x=1");
+        if send_result.is_err() {
+            signal_shutdown();
+            fail!(send_result);
+        }
 
+        let result = stream.read_to_str();
+        drop(stream); // close the connection
+
+        assert!(result.is_ok());
+        assert_eq!(~"200 OK", result.unwrap());  // BOGUS tmp response
+        
+        signal_shutdown();
+        tear_down();
+    }
+    
     #[test]
     fn test_follower_to_send_client_redirect_when_leader_is_unknown() {
         // launch server => this will not shutdown until a STOP signal is sent
-        let addr = launch_server();
+        let addr = launch_server(None);
         let mut stream = TcpStream::connect(addr);
         let send_result = send_client_cmd(&mut stream, ~"PUT x=1");
         if send_result.is_err() {
@@ -721,7 +809,7 @@ mod test {
     #[test]
     fn test_follower_to_send_client_redirect_when_leader_is_known() {
         // launch server => this will not shutdown until a STOP signal is sent
-        let addr = launch_server();
+        let addr = launch_server(None);
         let mut stream = TcpStream::connect(addr);
 
         // this message lets the follower know who the leader is (LEADER_ID = 4)
@@ -756,7 +844,7 @@ mod test {
     #[test]
     fn test_follower_with_single_AppendEntryRequest() {
         // launch server => this will not shutdown until a STOP signal is sent
-        let addr = launch_server();
+        let addr = launch_server(None);
         let mut stream = TcpStream::connect(addr);
         let logentry1 = send_aereq1(&mut stream);
 
@@ -805,7 +893,7 @@ mod test {
     #[test]
     fn test_follower_with_same_AppendEntryRequest_twice_should_return_false_2nd_time() {
         // launch server => this will not shutdown until a STOP signal is sent
-        let addr = launch_server();
+        let addr = launch_server(None);
         let mut stream = TcpStream::connect(addr);
 
         /* ---[ send logentry1 (term1) ]--- */
@@ -876,7 +964,7 @@ mod test {
     #[test]
     fn test_follower_with_multiple_valid_AppendEntryRequests() {
         // launch server => this will not shutdown until a STOP signal is sent
-        let addr = launch_server();
+        let addr = launch_server(None);
         let mut stream = TcpStream::connect(addr);
         let terms: Vec<u64> = vec!(1, 1, 1, 1);
         let indexes: Vec<u64> = vec!(1, 2, 3, 4);
@@ -911,7 +999,7 @@ mod test {
     #[test]
     fn test_follower_with_AppendEntryRequests_with_invalid_term() {
         // launch server => this will not shutdown until a STOP signal is sent
-        let addr = launch_server();
+        let addr = launch_server(None);
         let mut stream = TcpStream::connect(addr);
 
         /* ---[ AER 1, valid, initial ]--- */
@@ -989,7 +1077,7 @@ mod test {
     #[test]
     fn test_follower_with_AppendEntryRequests_with_invalid_prevLogTerm() {
         // launch server => this will not shutdown until a STOP signal is sent
-        let addr = launch_server();
+        let addr = launch_server(None);
         let mut stream = TcpStream::connect(addr);
 
         /* ---[ AER 1, valid, initial ]--- */
@@ -1076,10 +1164,10 @@ mod test {
     }
 
 
-    #[test]
+    // #[test]
     fn test_follower_with_AppendEntryRequests_with_changing_commit_idx() {
         // launch server => this will not shutdown until a STOP signal is sent
-        let addr = launch_server();
+        let addr = launch_server(None);
         let mut stream = TcpStream::connect(addr);
 
         /* ---[ AER 1, valid, initial ]--- */
