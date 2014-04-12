@@ -960,13 +960,18 @@ mod test {
     // once majority committed logic is added this will hang since the client
     // won't get a response  => perhaps have to build in a timeout to respond
     // to the client if can't commit within 2 seconds or something?
-    //#[test]
+    #[test]
     fn test_leader_simple() {
-        let cfg = CfgOptions {
-            init_state: Leader
-        };
-        let addr = launch_server(Some(cfg));
+        write_cfg_file(1);
+        let svr_id = 1;
+        let start_result = start_server(svr_id, Some(CfgOptions {init_state: Leader}));
+        if start_result.is_err() {
+            fail!("{:?}", start_result);
+        }
+        timer::sleep(400);
 
+        let addr = start_result.unwrap();
+        
         // Client msg #1
         let mut stream = TcpStream::connect(addr);
         let send_result1 = send_client_cmd(&mut stream, ~"PUT x=1");
@@ -990,7 +995,7 @@ mod test {
         let result2 = stream.read_to_str();
         drop(stream); // close the connection
 
-        signal_shutdown();
+        send_shutdown_signal(svr_id);
 
         assert!(result1.is_ok());
         assert_eq!(~"200 OK", result1.unwrap());  // BOGUS tmp response
