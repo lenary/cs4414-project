@@ -63,7 +63,7 @@ pub struct Server {
     last_applied_commit: u64,  // idx of highest log entry applied locally (may not yet be committed on other servers)
 
     peers: Vec<Peer>,          // peer servers
-    leader: int,               // pointer to peer that is current leader (might be self)  // TODO: this should be &Peer, but not sure how to do that in a Rust struct yet => do later
+    leader: int,               // "pointer" to peer that is current leader (idx into peers Vec)  // TODO: should this be &Peer?
 
     c: Sender<~Event>,  // TODO: keep chan or port?
     p: Receiver<~Event>,
@@ -137,6 +137,7 @@ impl Server {
     /// - a network-listener task is spawned and
     /// - the current task goes into the server_loop until a STOP signal is received
     ///
+    /// TODO: return val should probably be changed to IoResult<()> ...
     pub fn run(&mut self, opt: Option<CfgOptions>) -> Result<(), SError> {
         if self.state != Stopped {
             return Err(InvalidState(~"schooner.Server: Server already running"));
@@ -407,7 +408,7 @@ impl Server {
 ///
 fn get_peer_idx(peers: &Vec<Peer>, id: uint) -> int {
     for i in range(0, peers.len()) {
-        if peers.get(0).id == id {
+        if peers.get(i).id == id {
             return i as int;
         }
     }
@@ -600,7 +601,7 @@ mod test {
     extern crate serialize;
 
     use std::io;
-    use std::io::{BufferedReader,File,IoResult,Open,Write};
+    use std::io::{BufferedReader,File,IoResult,IoError,InvalidInput,Open,Write};
     use std::io::fs;
     use std::io::net::ip::SocketAddr;
     use std::io::net::tcp::TcpStream;
@@ -617,15 +618,103 @@ mod test {
     use schooner::append_entries::AppendEntriesRequest;
     use schooner::log_entry::LogEntry;
 
-    static S1TEST_DIR    : &'static str = "datalog";         // '
-    static S1TEST_PATH   : &'static str = "datalog/S1TEST";  // '
-    static S1TEST_CFG    : &'static str = "server.test.config";  // '
-    static S1TEST_IPADDR : &'static str = "127.0.0.1";       // '
+    static TEST_CFG      : &'static str = "server.test.config";  // '
+    static TEST_DIR      : &'static str = "datalog";             // '
+    static S1TEST_PATH   : &'static str = "datalog/S1TEST";      // '
+    static S2TEST_PATH   : &'static str = "datalog/S2TEST";      // '
+    static S3TEST_PATH   : &'static str = "datalog/S3TEST";      // '
+    static S4TEST_PATH   : &'static str = "datalog/S4TEST";      // '
+    static S5TEST_PATH   : &'static str = "datalog/S5TEST";      // '
+
+    static TEST_IPADDR   : &'static str = "127.0.0.1";           // '
     static S1TEST_PORT   : uint         = 23158;
+    static S2TEST_PORT   : uint         = 23159;
+    static S3TEST_PORT   : uint         = 23160;
+    static S4TEST_PORT   : uint         = 23161;
+    static S5TEST_PORT   : uint         = 23162;
     static LEADER_ID     : uint         = 4;
 
+    /////////// NEW CODE for running multiple servers /////////
+    fn write_cfg_file(num_svrs: uint) {
+        let cfgpath = Path::new(TEST_CFG);
+
+        let mut file = File::open_mode(&cfgpath, Open, Write).unwrap();
+
+        for i in range(0u, num_svrs) {
+            let entry = format!("peer.{}.addr = 127.0.0.1:{}", i + 1, S1TEST_PORT + i);
+            let result = file.write_line(entry);
+            if result.is_err() {
+                fail!("write_config write_line fail: {}", result.unwrap_err());
+            }
+        }
+    }
+
+    fn create_server(id: uint) -> IoResult<~Server> {
+        let dirpath = Path::new(TEST_DIR);
+        let logpath = match id {
+            1 => Path::new(S1TEST_PATH),
+            2 => Path::new(S2TEST_PATH),
+            3 => Path::new(S3TEST_PATH),
+            4 => Path::new(S4TEST_PATH),
+            5 => Path::new(S5TEST_PATH),
+            _ => return Err(IoError{kind: InvalidInput,
+                                    desc: "create_server: Invalid server id",
+                                    detail: Some(format!("Invalid server id: {}", id))})
+        };
+
+        // TODO: these asserts and fails are dangerous -> if another server already started the test will hang
+        // TODO: probably need to return Result<~Server, Err> instead and let the test case handle errors
+        if logpath.exists() {
+            try!(fs::unlink(&logpath));
+        }
+        if ! dirpath.exists() {
+            try!(fs::mkdir(&dirpath, io::UserRWX));
+        }
+        let server = try!(Server::new(id, Path::new(TEST_CFG), logpath));
+        Ok(server)
+    }
+
+    fn start_server(svr_id: uint, opt: Option<CfgOptions>) -> IoResult<SocketAddr> {
+        let (ch, pt): (Sender<IoResult<SocketAddr>>, Receiver<IoResult<SocketAddr>>) = channel();
+
+        spawn(proc() {
+            match create_server(svr_id) {
+                Ok(mut server) => {
+                    let ipaddr = format!("{:s}:{:u}", server.ip.to_owned(), server.tcpport);
+                    let socket_addr = from_str::<SocketAddr>(ipaddr).unwrap();
+                    ch.send(Ok(socket_addr));
+                    match server.run(opt) {
+                        Ok(_) => (),
+                        Err(e) => println!("launch_cluster: ERROR: {:?}", e)
+                    }
+                },
+                Err(e) => ch.send(Err(e))
+            }
+        });
+
+        let socket_addr = try!(pt.recv());
+        Ok(socket_addr)
+    }
+
+    fn send_shutdown_signal(svr_id: uint) {
+        let addr = from_str::<SocketAddr>(format!("{:s}:{:u}", TEST_IPADDR, S1TEST_PORT + svr_id - 1)).unwrap();
+        let mut stream = TcpStream::connect(addr);
+
+        // TODO: needs to change to AER with STOP cmd
+        let stop_msg = format!("Length: {:u}\n{:s}", "STOP".len(), "STOP");  // TODO: make "STOP" a static constant
+        let result = stream.write_str(stop_msg);
+        if result.is_err() {
+            fail!("Client ERROR: {:?}", result.err());
+        }
+        drop(stream); // close the connection   ==> NEED THIS? ask on #rust
+        timer::sleep(100);
+    }
+
+    
+    /////////// END NEW CODE for running multiple servers /////////
+
     fn write_config() -> Path {
-        let path = Path::new(S1TEST_CFG);
+        let path = Path::new(TEST_CFG);
         let mut file = File::open_mode(&path, Open, Write).unwrap();
 
         for i in range(0u, 5u) {
@@ -639,9 +728,15 @@ mod test {
         path
     }
 
-    fn setup() -> ~Server {
+    fn setup_cluster() -> Vec<~Server> {
+        let svrs: Vec<~Server> = Vec::with_capacity(5);
+        // TODO: FILL IN
+        svrs
+    }
+
+    fn setup_one() -> ~Server {
         let cfgpath = write_config();
-        let dirpath = Path::new(S1TEST_DIR);
+        let dirpath = Path::new(TEST_DIR);
         let filepath = Path::new(S1TEST_PATH);
 
         if filepath.exists() {
@@ -658,11 +753,12 @@ mod test {
         if result.is_err() {
             fail!("{:?}", result.err());
         }
-        return result.unwrap();
+        result.unwrap()
     }
 
+
     fn signal_shutdown() {
-        let addr = from_str::<SocketAddr>(format!("{:s}:{:u}", S1TEST_IPADDR, S1TEST_PORT)).unwrap();
+        let addr = from_str::<SocketAddr>(format!("{:s}:{:u}", TEST_IPADDR, S1TEST_PORT)).unwrap();
         let mut stream = TcpStream::connect(addr);
 
         // TODO: needs to change to AER with STOP cmd
@@ -675,24 +771,51 @@ mod test {
         timer::sleep(110);
     }
 
+
     fn tear_down() {
         let filepath = Path::new(S1TEST_PATH);
         let _ = fs::unlink(&filepath);
-        let cfgpath = Path::new(S1TEST_CFG);
+        let cfgpath = Path::new(TEST_CFG);
         let _ = fs::unlink(&cfgpath);
     }
 
+    // TODO: later should take a number of how big to make the cluster
+    // fn launch_cluster() -> Vec<SocketAddr> {
+    //     let addrs: Vec<SocketAddr> = Vec::new();
+
+    //     let mut svrs = setup_cluster();
+
+    //     // TODO: FILL IN
+    //     timer::sleep(750); // FIXME this is unstable => how fix?
+
+    //     let addrs: Vec<SocketAddr> = svrs.iter().map(|svr| {
+    //         from_str::<SocketAddr>(format!("{:s}:{:u}", svr.ip.clone(), svr.tcpport)).unwrap()
+    //     }).collect();
+
+    //     let mut server = svrs.get(0);
+    //     spawn(proc() {
+    //         match server.run(None) {
+    //             Ok(_) => (),
+    //             Err(e) => fail!("launch_cluster: ERROR: {:?}", e)
+    //         }
+    //     });
+
+    //     addrs
+    // }
+
+
     fn launch_server(opt: Option<CfgOptions>) -> SocketAddr {
         spawn(proc() {
-            let mut server = setup();
+            let mut server = setup_one();
             match server.run(opt) {
                 Ok(_) => (),
                 Err(e) => fail!("launch_server: ERROR: {:?}", e)
             }
         });
         timer::sleep(750); // FIXME this is unstable => how fix?
-        from_str::<SocketAddr>(format!("{:s}:{:u}", S1TEST_IPADDR.to_owned(), S1TEST_PORT)).unwrap()
+        from_str::<SocketAddr>(format!("{:s}:{:u}", TEST_IPADDR.to_owned(), S1TEST_PORT)).unwrap()
     }
+
 
     ///
     /// To specify an AEReq with no entries (hearbeat), pass in an idx_vec of size 0 and a term_vec of size 1 (need curr term)
@@ -808,6 +931,36 @@ mod test {
 
     /* ---[ tests ]--- */
     #[test]
+    fn test_leader_with_followers() {
+        write_cfg_file(3);
+        let result1 = start_server(1, Some(CfgOptions{init_state: Leader}));
+        if result1.is_err() {
+            fail!("{:?}", result1);
+        }        
+        timer::sleep(250); // wait a short while for the leader to get set up and listening on its socket
+
+        let result2 = start_server(2, None);
+        if result2.is_err() {
+            signal_shutdown();
+            fail!("{:?}", result2);
+        }
+        // start_server(3, None);
+
+        ///////////////////
+        // let addrs: Vec<SocketAddr> = launch_cluster();
+
+        send_shutdown_signal(1);
+        send_shutdown_signal(2);
+        tear_down();
+
+    }
+
+    // this one does not test the leader with any other Peers
+    // it works right now since there is no majority committed logic
+    // once majority committed logic is added this will hang since the client
+    // won't get a response  => perhaps have to build in a timeout to respond
+    // to the client if can't commit within 2 seconds or something?
+    //#[test]
     fn test_leader_simple() {
         let cfg = CfgOptions {
             init_state: Leader
