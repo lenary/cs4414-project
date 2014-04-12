@@ -573,24 +573,6 @@ fn is_stop_msg(s: &str) -> bool {
 
 // TODO: need to implement this
 fn main() {
-    // let id = 1;
-    // let path = Path::new(~"datalog/S1");
-    // let ipaddr = ~"127.0.0.1";
-    // let port = 23158;
-
-    let peer_cfg_path = Path::new(~"???");
-
-    // let result = Server::new(id, path, ipaddr, port, peer_cfg_path);
-    // if result.is_err() {
-    //     error!("{:?}", result.err());
-    //     return;
-    // }
-
-    // let mut s = result.unwrap();
-    // match s.run() {
-    //     Ok(_) => (),
-    //     Err(e) => println!("ERROR: {:?}", e)
-    // }
 }
 
 
@@ -628,13 +610,12 @@ mod test {
 
     static TEST_IPADDR   : &'static str = "127.0.0.1";           // '
     static S1TEST_PORT   : uint         = 23158;
-    static S2TEST_PORT   : uint         = 23159;
-    static S3TEST_PORT   : uint         = 23160;
-    static S4TEST_PORT   : uint         = 23161;
-    static S5TEST_PORT   : uint         = 23162;
-    static LEADER_ID     : uint         = 4;
+    // static S2TEST_PORT   : uint         = 23159;
+    // static S3TEST_PORT   : uint         = 23160;
+    // static S4TEST_PORT   : uint         = 23161;
+    // static S5TEST_PORT   : uint         = 23162;
+    static LEADER_ID     : uint         = 1;
 
-    /////////// NEW CODE for running multiple servers /////////
     fn write_cfg_file(num_svrs: uint) {
         let cfgpath = Path::new(TEST_CFG);
 
@@ -710,110 +691,12 @@ mod test {
         timer::sleep(100);
     }
 
-    
-    /////////// END NEW CODE for running multiple servers /////////
-
-    fn write_config() -> Path {
-        let path = Path::new(TEST_CFG);
-        let mut file = File::open_mode(&path, Open, Write).unwrap();
-
-        for i in range(0u, 5u) {
-            let entry = format!("peer.{}.addr = 127.0.0.1:{}", i + 1, S1TEST_PORT + i);
-            let result = file.write_line(entry);
-            if result.is_err() {
-                fail!("write_config write_line fail: {}", result.unwrap_err());
-            }
-        }
-
-        path
-    }
-
-    fn setup_cluster() -> Vec<~Server> {
-        let svrs: Vec<~Server> = Vec::with_capacity(5);
-        // TODO: FILL IN
-        svrs
-    }
-
-    fn setup_one() -> ~Server {
-        let cfgpath = write_config();
-        let dirpath = Path::new(TEST_DIR);
-        let filepath = Path::new(S1TEST_PATH);
-
-        if filepath.exists() {
-            let fs_res = fs::unlink(&filepath);
-            assert!(fs_res.is_ok());
-        }
-        if ! dirpath.exists() {
-            let fs_res = fs::mkdir(&dirpath, io::UserRWX);
-            assert!(fs_res.is_ok());
-        }
-
-        let id = 1;  // this server has id 1
-        let result = super::Server::new(id, cfgpath, filepath);
-        if result.is_err() {
-            fail!("{:?}", result.err());
-        }
-        result.unwrap()
-    }
-
-
-    fn signal_shutdown() {
-        let addr = from_str::<SocketAddr>(format!("{:s}:{:u}", TEST_IPADDR, S1TEST_PORT)).unwrap();
-        let mut stream = TcpStream::connect(addr);
-
-        // TODO: needs to change to AER with STOP cmd
-        let stop_msg = format!("Length: {:u}\n{:s}", "STOP".len(), "STOP");  // TODO: make "STOP" a static constant
-        let result = stream.write_str(stop_msg);
-        if result.is_err() {
-            fail!("Client ERROR: {:?}", result.err());
-        }
-        drop(stream); // close the connection   ==> NEED THIS? ask on #rust
-        timer::sleep(110);
-    }
-
 
     fn tear_down() {
         let filepath = Path::new(S1TEST_PATH);
         let _ = fs::unlink(&filepath);
         let cfgpath = Path::new(TEST_CFG);
         let _ = fs::unlink(&cfgpath);
-    }
-
-    // TODO: later should take a number of how big to make the cluster
-    // fn launch_cluster() -> Vec<SocketAddr> {
-    //     let addrs: Vec<SocketAddr> = Vec::new();
-
-    //     let mut svrs = setup_cluster();
-
-    //     // TODO: FILL IN
-    //     timer::sleep(750); // FIXME this is unstable => how fix?
-
-    //     let addrs: Vec<SocketAddr> = svrs.iter().map(|svr| {
-    //         from_str::<SocketAddr>(format!("{:s}:{:u}", svr.ip.clone(), svr.tcpport)).unwrap()
-    //     }).collect();
-
-    //     let mut server = svrs.get(0);
-    //     spawn(proc() {
-    //         match server.run(None) {
-    //             Ok(_) => (),
-    //             Err(e) => fail!("launch_cluster: ERROR: {:?}", e)
-    //         }
-    //     });
-
-    //     addrs
-    // }
-
-
-    fn launch_server(opt: Option<CfgOptions>) -> SocketAddr {
-        spawn(proc() {
-            let mut server = setup_one();
-            match server.run(opt) {
-                Ok(_) => (),
-                Err(e) => fail!("launch_server: ERROR: {:?}", e)
-            }
-        });
-        timer::sleep(750); // FIXME this is unstable => how fix?
-        from_str::<SocketAddr>(format!("{:s}:{:u}", TEST_IPADDR.to_owned(), S1TEST_PORT)).unwrap()
     }
 
 
@@ -933,15 +816,15 @@ mod test {
     #[test]
     fn test_leader_with_followers() {
         write_cfg_file(3);
-        let result1 = start_server(1, Some(CfgOptions{init_state: Leader}));
-        if result1.is_err() {
-            fail!("{:?}", result1);
-        }        
+        let start_result = start_server(1, Some(CfgOptions{init_state: Leader}));
+        if start_result.is_err() {
+            fail!("{:?}", start_result);
+        }
         timer::sleep(250); // wait a short while for the leader to get set up and listening on its socket
 
         let result2 = start_server(2, None);
         if result2.is_err() {
-            signal_shutdown();
+            send_shutdown_signal(1);
             fail!("{:?}", result2);
         }
         // start_server(3, None);
@@ -971,12 +854,12 @@ mod test {
         timer::sleep(400);
 
         let addr = start_result.unwrap();
-        
+
         // Client msg #1
         let mut stream = TcpStream::connect(addr);
         let send_result1 = send_client_cmd(&mut stream, ~"PUT x=1");
         if send_result1.is_err() {
-            signal_shutdown();
+            send_shutdown_signal(svr_id);
             fail!(send_result1);
         }
 
@@ -988,7 +871,7 @@ mod test {
         let mut stream = TcpStream::connect(addr);
         let send_result2 = send_client_cmd(&mut stream, ~"PUT x=2");
         if send_result2.is_err() {
-            signal_shutdown();
+            send_shutdown_signal(svr_id);
             fail!(send_result2);
         }
 
@@ -1006,23 +889,29 @@ mod test {
         tear_down();
     }
 
-    //#[test]
+    #[test]
     fn test_follower_to_send_client_redirect_when_leader_is_unknown() {
-        // launch server => this will not shutdown until a STOP signal is sent
-        let addr = launch_server(None);
+        write_cfg_file(3);
+        let svr_id = 1;
+        let start_result = start_server(svr_id, None);
+        if start_result.is_err() {
+            fail!("{:?}", start_result);
+        }
+        timer::sleep(400); // wait a short while for the leader to get set up and listening on its socket
+
+        let addr = start_result.unwrap();
         let mut stream = TcpStream::connect(addr);
         let send_result = send_client_cmd(&mut stream, ~"PUT x=1");
         if send_result.is_err() {
-            signal_shutdown();
+            send_shutdown_signal(svr_id);
             fail!(send_result);
         }
 
         let result = stream.read_to_str();
         drop(stream); // close the connection
 
-        signal_shutdown();
+        send_shutdown_signal(svr_id);
 
-        println!("{:?}", result);
         assert!(result.is_ok());
         let resp = result.unwrap();
 
@@ -1032,13 +921,20 @@ mod test {
         tear_down();
     }
 
-    //#[test]
+    #[test]
     fn test_follower_to_send_client_redirect_when_leader_is_known() {
-        // launch server => this will not shutdown until a STOP signal is sent
-        let addr = launch_server(None);
+        write_cfg_file(3);
+        let svr_id = 2;
+        let start_result = start_server(svr_id, None);
+        if start_result.is_err() {
+            fail!("{:?}", start_result);
+        }
+        timer::sleep(400); // wait a short while for the leader to get set up and listening on its socket
+
+        let addr = start_result.unwrap();
         let mut stream = TcpStream::connect(addr);
 
-        // this message lets the follower know who the leader is (LEADER_ID = 4)
+        // this message lets the follower know who the leader is (LEADER_ID = 1)
         let _ = send_aereq1(&mut stream);
         let result1 = stream.read_to_str();
         drop(stream); // close the connection
@@ -1048,30 +944,38 @@ mod test {
         stream = TcpStream::connect(addr);
         let send_result = send_client_cmd(&mut stream, ~"PUT x=1");
         if send_result.is_err() {
-            signal_shutdown();
+            send_shutdown_signal(svr_id);
             fail!(send_result);
         }
-        let result2 = stream.read_to_str();
 
+        let result2 = stream.read_to_str();
         drop(stream); // close the connection
 
-        signal_shutdown();  // TODO: is there a better way to ensure a fn is called if an assert fails?
+        send_shutdown_signal(svr_id);  // TODO: is there a better way to ensure a fn is called if an assert fails?
 
-        println!("{:?}", result2);
         assert!(result1.is_ok());
         assert!(result2.is_ok());
         let resp = result2.unwrap();
 
-        assert!(resp.contains(format!("Redirect: 127.0.0.1:{}", 23158 + LEADER_ID - 1))); // port should be 23161
+        assert!(resp.contains(format!("Redirect: 127.0.0.1:{}", S1TEST_PORT)));
 
         tear_down();
     }
 
-    //#[test]
+    #[test]
     fn test_follower_with_single_AppendEntryRequest() {
-        // launch server => this will not shutdown until a STOP signal is sent
-        let addr = launch_server(None);
+        write_cfg_file(1);
+        let svr_id = 1;
+        let start_result = start_server(svr_id, None);
+        if start_result.is_err() {
+            fail!("{:?}", start_result);
+        }
+        timer::sleep(400); // wait a short while for the leader to get set up and listening on its socket
+
+        let addr = start_result.unwrap();
         let mut stream = TcpStream::connect(addr);
+
+        // the test task acts as leader, sending AEReqs
         let logentry1 = send_aereq1(&mut stream);
 
         /* ---[ read response and signal server to shut down ]--- */
@@ -1079,11 +983,9 @@ mod test {
         let result1 = stream.read_to_str();
         drop(stream); // close the connection
 
-        signal_shutdown();  // TODO: is there a better way to ensure a fn is called if an assert fails?
+        send_shutdown_signal(svr_id);  // TODO: is there a better way to ensure a fn is called if an assert fails?
 
         /* ---[ validate results ]--- */
-
-        // validate response
 
         assert!(result1.is_ok());
         let resp = result1.unwrap();
@@ -1116,12 +1018,21 @@ mod test {
         tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
     }
 
-    //#[test]
+    #[test]
     fn test_follower_with_same_AppendEntryRequest_twice_should_return_false_2nd_time() {
-        // launch server => this will not shutdown until a STOP signal is sent
-        let addr = launch_server(None);
+        write_cfg_file(1);
+        let svr_id = 1;
+        let start_result = start_server(svr_id, None);
+        if start_result.is_err() {
+            fail!("{:?}", start_result);
+        }
+        timer::sleep(400); // wait a short while for the leader to get set up and listening on its socket
+
+        let addr = start_result.unwrap();
         let mut stream = TcpStream::connect(addr);
 
+        // test case task acts as leader sending AEReq
+        
         /* ---[ send logentry1 (term1) ]--- */
 
         let logentry1 = send_aereq1(&mut stream);
@@ -1136,8 +1047,7 @@ mod test {
         let result2 = stream.read_to_str();
         drop(stream); // close the connection
 
-
-        signal_shutdown();  // TODO: is there a better way to ensure a fn is called if an assert fails?
+        send_shutdown_signal(svr_id);  // TODO: is there a better way to ensure a fn is called if an assert fails?
 
         /* ---[ validate results ]--- */
 
@@ -1187,10 +1097,17 @@ mod test {
         tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
     }
 
-    //#[test]
+    #[test]
     fn test_follower_with_multiple_valid_AppendEntryRequests() {
-        // launch server => this will not shutdown until a STOP signal is sent
-        let addr = launch_server(None);
+        write_cfg_file(1);
+        let svr_id = 1;
+        let start_result = start_server(svr_id, None);
+        if start_result.is_err() {
+            fail!("{:?}", start_result);
+        }
+        timer::sleep(400); // wait a short while for the leader to get set up and listening on its socket
+
+        let addr = start_result.unwrap();
         let mut stream = TcpStream::connect(addr);
         let terms: Vec<u64> = vec!(1, 1, 1, 1);
         let indexes: Vec<u64> = vec!(1, 2, 3, 4);
@@ -1203,7 +1120,7 @@ mod test {
         let result1 = stream.read_to_str();
         drop(stream); // close the connection   ==> NEED THIS? ask on #rust
 
-        signal_shutdown();  // TODO: is there a better way to ensure a fn is called if an assert fails?
+        send_shutdown_signal(svr_id);  // TODO: is there a better way to ensure a fn is called if an assert fails?
 
         /* ---[ validate ]--- */
         assert_eq!(4, logentries.len());
@@ -1222,10 +1139,17 @@ mod test {
     }
 
     // TODO: test commit_idx as well
-    //#[test]
+    #[test]
     fn test_follower_with_AppendEntryRequests_with_invalid_term() {
-        // launch server => this will not shutdown until a STOP signal is sent
-        let addr = launch_server(None);
+        write_cfg_file(1);
+        let svr_id = 1;
+        let start_result = start_server(svr_id, None);
+        if start_result.is_err() {
+            fail!("{:?}", start_result);
+        }
+        timer::sleep(400); // wait a short while for the leader to get set up and listening on its socket
+
+        let addr = start_result.unwrap();
         let mut stream = TcpStream::connect(addr);
 
         /* ---[ AER 1, valid, initial ]--- */
@@ -1259,7 +1183,7 @@ mod test {
         let result3 = stream.read_to_str();
         drop(stream); // close the connection
 
-        signal_shutdown();  // TODO: is there a better way to ensure a fn is called if an assert fails?
+        send_shutdown_signal(svr_id);  // TODO: is there a better way to ensure a fn is called if an assert fails?
 
         /* ---[ validate ]--- */
 
@@ -1300,10 +1224,17 @@ mod test {
         tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
     }
 
-    //#[test]
+    #[test]
     fn test_follower_with_AppendEntryRequests_with_invalid_prevLogTerm() {
-        // launch server => this will not shutdown until a STOP signal is sent
-        let addr = launch_server(None);
+        write_cfg_file(1);
+        let svr_id = 1;
+        let start_result = start_server(svr_id, None);
+        if start_result.is_err() {
+            fail!("{:?}", start_result);
+        }
+        timer::sleep(400); // wait a short while for the leader to get set up and listening on its socket
+
+        let addr = start_result.unwrap();
         let mut stream = TcpStream::connect(addr);
 
         /* ---[ AER 1, valid, initial ]--- */
@@ -1341,7 +1272,7 @@ mod test {
 
         let num_entries_logged3 = num_entries_in_log();
 
-        signal_shutdown();  // TODO: is there a better way to ensure a fn is called if an assert fails?
+        send_shutdown_signal(svr_id);
 
         /* ---[ validate ]--- */
 
@@ -1390,10 +1321,17 @@ mod test {
     }
 
 
-    //#[test]
+    #[test]
     fn test_follower_with_AppendEntryRequests_with_changing_commit_idx() {
-        // launch server => this will not shutdown until a STOP signal is sent
-        let addr = launch_server(None);
+        write_cfg_file(1);
+        let svr_id = 1;
+        let start_result = start_server(svr_id, None);
+        if start_result.is_err() {
+            fail!("{:?}", start_result);
+        }
+        timer::sleep(400); // wait a short while for the leader to get set up and listening on its socket
+
+        let addr = start_result.unwrap();
         let mut stream = TcpStream::connect(addr);
 
         /* ---[ AER 1, valid, initial ]--- */
@@ -1460,7 +1398,7 @@ mod test {
 
         let num_entries_logged5 = num_entries_in_log();
 
-        signal_shutdown();  // TODO: is there a better way to ensure a fn is called if an assert fails?
+        send_shutdown_signal(svr_id);  // TODO: is there a better way to ensure a fn is called if an assert fails?
 
         /* ---[ validate ]--- */
 
