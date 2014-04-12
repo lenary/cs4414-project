@@ -151,9 +151,10 @@ impl Server {
 
         let event_chan = self.c.clone();
         let conx_str = format!("{}:{:u}", &self.ip, self.tcpport);
+        let svr_id = self.id;
         spawn(proc() {
             // FIXME: needs to be a separate file/impl ??
-            network_listener(conx_str, event_chan);
+            network_listener(conx_str, event_chan, svr_id);
         });
 
         self.serve_loop();
@@ -182,7 +183,7 @@ impl Server {
 
         loop {
             println!("FLW: DEBUG 0");
-            let timeout = timer.oneshot(1000); // use for detecting lost leader  // TODO: adjust this time
+            let timeout = timer.oneshot(2200); // use for detecting lost leader  // TODO: adjust this time
 
             let sel = Select::new();
             let mut pt = sel.handle(&self.p);
@@ -254,8 +255,8 @@ impl Server {
     fn leader_loop(&mut self) {
         println!("leader loop with id = {:?}", self.id);
 
+        // TODO: this needs to go into the loop below with Select behavior
         let mut timer = Timer::new().unwrap();
-        // FIXME: this needs to be in a loop
         let timeout = timer.oneshot(100); // frequency of heartbeat to followers  // TODO: parameterize this time
         timeout.recv();
 
@@ -280,6 +281,8 @@ impl Server {
         // now wait for network msgs (or timeout -> need to add timeout)
         // TODO: should be in loop
         loop {
+            println!("in leader loop for = {:?} :: waiting on self.p", self.id);
+            
             let ev = self.p.recv();
             debug!("follower: event message: {}", ev.msg);
             if is_stop_msg(ev.msg) {
@@ -321,6 +324,8 @@ impl Server {
     /// Runs in its own task and handles all leader->follower messaging to the specified Peer
     ///
     fn leader_peer_handler(peer: Peer, chrecv: Receiver<~str>) {
+        println!("LEADER PEER_HANDLER for peer {:?}", peer.id);
+        
         loop {
             let msg = chrecv.recv();
             if msg == ~"STOP" {
@@ -513,17 +518,18 @@ fn read_network_msg(stream: TcpStream) -> IoResult<~str> {
 /// Events can be any incoming information, such as STOP messages, AEReqs, AEResponses or client commands (???) => not yet implemented
 /// chan: Event channel in the Server struct.
 ///
-fn network_listener(conx_str: ~str, chan: Sender<~Event>) {
+fn network_listener(conx_str: ~str, chan: Sender<~Event>, svr_id: uint) {
     let addr = from_str::<SocketAddr>(conx_str).expect("Address error.");
     let mut acceptor = TcpListener::bind(addr).unwrap().listen();
-    println!("server <id> listening on {:}", addr);  // TODO: need to pass in id?
+    println!("server <{}> listening on {:}", svr_id, addr);
 
     // TODO: document what this channel is for
     let (chsend, chrecv): (Sender<~str>, Receiver<~str>) = channel();
     let mut stop_signalled = false;
 
+    println!("NL: DEBUG 00: svr: {}", svr_id);
     for stream in acceptor.incoming() {
-        println!("NL: DEBUG 0");
+        println!("NL: DEBUG 0: svr: {}", svr_id);
 
         let mut stream = stream.unwrap();
 
@@ -535,10 +541,10 @@ fn network_listener(conx_str: ~str, chan: Sender<~Event>) {
 
                 if is_stop_msg(input) {
                     stop_signalled = true;  // TODO: do I need to set this bool var or can I just break out here?
-                    println!("NL: DEBUG 1: was stop msg");
+                    println!("NL: DEBUG 1: was stop msg for svr: {}", svr_id);
 
                 } else {
-                    println!("NL: sent Event to event-loop; now waiting on response");
+                    println!("NL: sent Event to event-loop; now waiting on response for svr: {}", svr_id);
 
                     // Once the Event is sent to serve-loop task it awaits a response (string)
                     // and the response will be send back to the network caller.
@@ -548,22 +554,22 @@ fn network_listener(conx_str: ~str, chan: Sender<~Event>) {
                     println!("NL: sending response: {:?}", resp);
                     let result = stream.write_str(resp);
                     if result.is_err() {
-                        error!("ERROR: Unable to respond to sender over network: {:?}", result.err());
+                        error!("ERROR: Unable to respond to sender over network: {:?} for svr: {}", result.err(), svr_id);
                     }
                     let _ = stream.flush();
                 }
-                println!("NL: DEBUG 2b");
+                println!("NL: DEBUG 2 for svr {}", svr_id);
             },
             Err(ioerr) => error!("ERROR: {:?}", ioerr)
         }
         if stop_signalled {
-            println!("NL: DEBUG 4");
+            println!("NL: DEBUG 4 for svr {}", svr_id);
             break;
         }
     }
 
     // TODO: change this to debug!
-    println!("network listener shutting down ...");
+    println!("network listener shutting down ... for svr {}", svr_id);
 }
 
 
@@ -678,17 +684,18 @@ mod test {
     }
 
     fn send_shutdown_signal(svr_id: uint) {
-        let addr = from_str::<SocketAddr>(format!("{:s}:{:u}", TEST_IPADDR, S1TEST_PORT + svr_id - 1)).unwrap();
+        let ipaddr = format!("{:s}:{:u}", TEST_IPADDR, S1TEST_PORT + svr_id - 1);
+        let addr = from_str::<SocketAddr>(ipaddr).unwrap();
         let mut stream = TcpStream::connect(addr);
 
         // TODO: needs to change to AER with STOP cmd
         let stop_msg = format!("Length: {:u}\n{:s}", "STOP".len(), "STOP");  // TODO: make "STOP" a static constant
         let result = stream.write_str(stop_msg);
         if result.is_err() {
-            fail!("Client ERROR: {:?}", result.err());
+            fail!("send_shutdown_signal: Client ERROR connection to {}.  ERROR: {:?}", ipaddr, result.err());
         }
-        drop(stream); // close the connection   ==> NEED THIS? ask on #rust
-        timer::sleep(100);
+        drop(stream); // close the connection
+        timer::sleep(100);  // TODO: remove this ??
     }
 
 
@@ -816,24 +823,60 @@ mod test {
     #[test]
     fn test_leader_with_followers() {
         write_cfg_file(3);
-        let start_result = start_server(1, Some(CfgOptions{init_state: Leader}));
-        if start_result.is_err() {
-            fail!("{:?}", start_result);
-        }
-        timer::sleep(250); // wait a short while for the leader to get set up and listening on its socket
 
+        // start leader
+        let start_result1 = start_server(1, Some(CfgOptions{init_state: Leader}));
+        if start_result1.is_err() {
+            fail!("{:?}", start_result1);
+        }
+        timer::sleep(50); // wait a short while for the leader to get set up and ready to msg followers
+
+        // start follower, svr 2
         let result2 = start_server(2, None);
         if result2.is_err() {
-            send_shutdown_signal(1);
-            fail!("{:?}", result2);
+            // send_shutdown_signal(1);
+            fail!("resul2.is_err: {:?}", result2);
         }
-        // start_server(3, None);
 
-        ///////////////////
-        // let addrs: Vec<SocketAddr> = launch_cluster();
+        // start follower, svr 3
+        // let result3 = start_server(3, None);
+        // if result3.is_err() {
+        //     send_shutdown_signal(1);
+        //     send_shutdown_signal(2);
+        //     fail!("{:?}", result3);
+        // }
 
-        send_shutdown_signal(1);
-        send_shutdown_signal(2);
+        timer::sleep(250); // wait a short while for all servers to get set up
+
+        let ldr_addr = start_result1.unwrap();
+        
+        // now send client messages to leader
+        // Client msg #1
+        let mut stream = TcpStream::connect(ldr_addr);
+        let send_result1 = send_client_cmd(&mut stream, ~"PUT x=1");
+        if send_result1.is_err() {
+            send_shutdown_signal(1);
+            send_shutdown_signal(2);
+            send_shutdown_signal(3);
+            fail!(send_result1);
+        }
+
+        send_shutdown_signal(2);  // If this goes any lower, the shutdown signal isn't sent properly - why???
+
+        let result1 = stream.read_to_str();
+        drop(stream); // close the connection        
+
+        // spawn(proc() {
+            send_shutdown_signal(1);
+        // });
+        // spawn(proc() {
+        // });
+        // send_shutdown_signal(3);
+
+        // validate after shutting down servers
+        assert!(result1.is_ok());
+        assert_eq!(~"200 OK", result1.unwrap());  // BOGUS tmp response
+        
         tear_down();
 
     }
@@ -843,7 +886,7 @@ mod test {
     // once majority committed logic is added this will hang since the client
     // won't get a response  => perhaps have to build in a timeout to respond
     // to the client if can't commit within 2 seconds or something?
-    #[test]
+    //#[test]
     fn test_leader_simple() {
         write_cfg_file(1);
         let svr_id = 1;
@@ -889,7 +932,7 @@ mod test {
         tear_down();
     }
 
-    #[test]
+    //#[test]
     fn test_follower_to_send_client_redirect_when_leader_is_unknown() {
         write_cfg_file(3);
         let svr_id = 1;
@@ -921,7 +964,7 @@ mod test {
         tear_down();
     }
 
-    #[test]
+    //#[test]
     fn test_follower_to_send_client_redirect_when_leader_is_known() {
         write_cfg_file(3);
         let svr_id = 2;
@@ -962,7 +1005,7 @@ mod test {
         tear_down();
     }
 
-    #[test]
+    //#[test]
     fn test_follower_with_single_AppendEntryRequest() {
         write_cfg_file(1);
         let svr_id = 1;
@@ -1018,7 +1061,7 @@ mod test {
         tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
     }
 
-    #[test]
+    //#[test]
     fn test_follower_with_same_AppendEntryRequest_twice_should_return_false_2nd_time() {
         write_cfg_file(1);
         let svr_id = 1;
@@ -1097,7 +1140,7 @@ mod test {
         tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
     }
 
-    #[test]
+    //#[test]
     fn test_follower_with_multiple_valid_AppendEntryRequests() {
         write_cfg_file(1);
         let svr_id = 1;
@@ -1139,7 +1182,7 @@ mod test {
     }
 
     // TODO: test commit_idx as well
-    #[test]
+    //#[test]
     fn test_follower_with_AppendEntryRequests_with_invalid_term() {
         write_cfg_file(1);
         let svr_id = 1;
@@ -1224,7 +1267,7 @@ mod test {
         tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
     }
 
-    #[test]
+    //#[test]
     fn test_follower_with_AppendEntryRequests_with_invalid_prevLogTerm() {
         write_cfg_file(1);
         let svr_id = 1;
@@ -1321,7 +1364,7 @@ mod test {
     }
 
 
-    #[test]
+    //#[test]
     fn test_follower_with_AppendEntryRequests_with_changing_commit_idx() {
         write_cfg_file(1);
         let svr_id = 1;
