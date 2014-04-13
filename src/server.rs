@@ -336,17 +336,30 @@ impl Server {
                 println!("RECEIVED CLIENT CMD {:?} for peer hdlr: {:?}", msg, peer.id);
                 // connect to peer
                 // FIXME: this unwrap may be unsafe -> do we know that the formats will always be right when we get here?
-                let addr = from_str::<SocketAddr>(format!("{}:{:u}", &peer.ip, peer.tcpport)).unwrap();
+                let ipaddr = format!("{}:{:u}", &peer.ip, peer.tcpport);
+                let addr = from_str::<SocketAddr>(ipaddr).unwrap();
+                info!("PHDLR: DEBUG 887: connecting to: {}", ipaddr);
+
                 let mut stream = TcpStream::connect(addr);
-                let result = stream.write_str(msg);
+                // have to add the Length to the network message
+                let result = stream.write_str(format!("Length: {:u}\n{:s}", msg.len(), msg));
+
+                println!("PHDLR DEBUG 888 for peer: {}", peer.id);
                 if result.is_err() {
-                    // println!("WARN: Unable to send message to peer {}", peer);
+                    println!("PHDLR for peer {} == WARN: Unable to send message to peer {}", peer.id, peer);
                     continue;
                 }
                 let _ = stream.flush();
+                println!("PHDLR DEBUG 890 for peer: {}", peer.id);
                 // FIXME: this is a blocking call => how avoid an eternal wait?
-                let response = stream.read_to_str();
-                println!(">> peer hdlr {} ==> PEER RESPONSE: {}", peer.id, response);
+
+                // fn read(&mut self, buf: &mut [u8]) -> IoResult<uint>
+                // let mut buf: Vec<u8> = Vec::from_elem(1, 0u8);
+                // let response = stream.read(buf.as_mut_slice());
+                // TODO: currently responses do not have a length in the message => probably should?
+                let response = stream.read_to_str(); // this type of read is only safe if the other end closes the stream (EOF)
+                println!(">>===> PEER HDLR {} ==> PEER RESPONSE: {}", peer.id, response);
+                drop(stream);  // TODO: probably unneccesary since goes out of scope
             }
         }
         println!("PEER HANDLER FOR {:?} SHUTTING DOWN", peer.id);
@@ -479,7 +492,7 @@ fn parse_content_length(len_line: &str) -> Option<uint> {
 ///
 /// TODO: can this fn deal with HTTP style requests? If not, what should the client request look like for this to work?
 ///
-fn read_network_msg(stream: TcpStream) -> IoResult<~str> {
+fn read_network_msg(stream: TcpStream, svr_id: uint) -> IoResult<~str> {
     let mut reader = BufferedReader::new(stream);
 
     let length_hdr = try!(reader.read_line());
@@ -490,11 +503,11 @@ fn read_network_msg(stream: TcpStream) -> IoResult<~str> {
                            detail: Some(format!("length line parsed: {:s}", length_hdr))});
     }
     let length = result.unwrap();
-    println!("** CL: {:u}", length);  // TODO: remove
+    info!("** CL: {:u} for svr {}", length, svr_id);
 
-    // TODO: this is probably not the right (or long-term) way to handle this => ask on IRC
+    // TODO: is this the right way to do this?
     let mut buf: Vec<u8> = Vec::from_elem(length, 0u8);
-    let nread = try!(reader.read(buf.as_mut_slice()));  // FIXME: read needs ~[u8], so how deal with that?
+    let nread = try!(reader.read(buf.as_mut_slice()));
 
     if nread != length {
         return Err(IoError{kind: InvalidInput,
@@ -534,7 +547,7 @@ fn network_listener(conx_str: ~str, chan: Sender<~Event>, svr_id: uint) {
         let mut stream = stream.unwrap();
 
         // TODO: only handling one request at a time for now => spawn threads later?
-        match read_network_msg(stream.clone()) {
+        match read_network_msg(stream.clone(), svr_id) {
             Ok(input)  => {
                 let ev = ~Event{msg: input.clone(), ch: chsend.clone()};
                 chan.send(ev);
@@ -832,21 +845,21 @@ mod test {
         timer::sleep(50); // wait a short while for the leader to get set up and ready to msg followers
 
         // start follower, svr 2
-        let result2 = start_server(2, None);
-        if result2.is_err() {
+        let start_result2 = start_server(2, None);
+        if start_result2.is_err() {
             // send_shutdown_signal(1);
-            fail!("resul2.is_err: {:?}", result2);
+            fail!("resul2.is_err: {:?}", start_result2);
         }
 
         // start follower, svr 3
-        // let result3 = start_server(3, None);
-        // if result3.is_err() {
-        //     send_shutdown_signal(1);
-        //     send_shutdown_signal(2);
-        //     fail!("{:?}", result3);
-        // }
+        let result3 = start_server(3, None);
+        if result3.is_err() {
+            send_shutdown_signal(1);
+            send_shutdown_signal(2);
+            fail!("{:?}", result3);
+        }
 
-        timer::sleep(250); // wait a short while for all servers to get set up
+        timer::sleep(150); // wait a short while for all servers to get set up
 
         let ldr_addr = start_result1.unwrap();
         
@@ -861,24 +874,23 @@ mod test {
             fail!(send_result1);
         }
 
-        send_shutdown_signal(2);  // If this goes any lower, the shutdown signal isn't sent properly - why???
-
         let result1 = stream.read_to_str();
         drop(stream); // close the connection        
 
-        // spawn(proc() {
+        timer::sleep(50); // wait a short while for all servers to get set up
+        spawn(proc() {
             send_shutdown_signal(1);
-        // });
-        // spawn(proc() {
-        // });
-        // send_shutdown_signal(3);
+        });
+        spawn(proc() {
+            send_shutdown_signal(2);
+        });
+        send_shutdown_signal(3);
 
         // validate after shutting down servers
         assert!(result1.is_ok());
         assert_eq!(~"200 OK", result1.unwrap());  // BOGUS tmp response
         
         tear_down();
-
     }
 
     // this one does not test the leader with any other Peers
