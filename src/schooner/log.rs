@@ -46,7 +46,7 @@ impl Log {
             path: path,
             idx: start_idx,
             term: term,
-            idx_term_hist: Vec::with_capacity(4096),
+            idx_term_hist: Vec::with_capacity(4096),  // TODO: do we also need to cache include the client uuid ?
         };
 
         return Ok(lg);

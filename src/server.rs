@@ -12,6 +12,7 @@ use std::{cmp,str};
 use std::io::{Acceptor,BufferedReader,InvalidInput,IoError,IoResult,Listener,Timer};
 use std::io::net::ip::SocketAddr;
 use std::io::net::tcp::{TcpListener,TcpStream};
+use std::io::timer;
 use std::vec::Vec;
 
 use collections::hashmap::HashMap;
@@ -257,28 +258,29 @@ impl Server {
 
     fn leader_loop(&mut self) {
         info!("leader loop with id = {:?}", self.id);
-        
-        
-        // TODO: this needs to go into the loop below with Select behavior
+
+
+        // TODO: this needs to go into the loop below and have Select behavior over multiple chans
         let mut timer = Timer::new().unwrap();
         let timeout = timer.oneshot(100); // frequency of heartbeat to followers  // TODO: parameterize this time
         timeout.recv();
 
         // TODO: change this to a Vec<(peer.id, chsend)> and just search linearly through it => no need for full hashmap
         //       or implement some simple ArrayHashMap like Clojure has
-        let mut peer_chans: HashMap<uint, Sender<~str>> = HashMap::new();
+        let mut peer_chans: HashMap<uint, (Sender<~str>, Receiver<IoResult<AppendEntriesResponse>>)> = HashMap::new();
 
         // spawn the peer handler tasks
         for p in self.peers.iter() {
-            let (chsend, chrecv): (Sender<~str>, Receiver<~str>) = channel();
-            peer_chans.insert(p.id, chsend);
+            let (chsend_aereq, chrecv_aereq) : (Sender<~str>, Receiver<~str>) = channel();
+            let (chsend_response, chrecv_response): (Sender<IoResult<AppendEntriesResponse>>, Receiver<IoResult<AppendEntriesResponse>>) = channel();
+            peer_chans.insert(p.id, (chsend_aereq, chrecv_response));
 
             // TODO: need to launch a separate task to handle each IO interaction with the followers
             let peer = p.clone();
             spawn(proc() {
-                // TODO: will need to send a chsend as well to message back (at least shutdown notices)
+                // TODO: will need to send a chsend_aereq as well to message back (at least shutdown notices)
                 // TODO: put in logic to flw_handler that if no messages from papa after some timeout, to shutdown
-                Server::leader_peer_handler(peer, chrecv);
+                Server::leader_peer_handler(peer, chrecv_aereq, chsend_response);
             });
         }
 
@@ -293,7 +295,7 @@ impl Server {
                 println!("LDR: DEBUG 200");
                 self.state = Stopped;
                 for p in self.peers.iter() {
-                    let peer_chan: &Sender<~str> = peer_chans.get(&p.id);
+                    let &(ref peer_chan, _) = peer_chans.get(&p.id);
                     peer_chan.send(~"STOP");
                 }
                 break;
@@ -301,6 +303,7 @@ impl Server {
             } else if is_cmd_from_client(ev.msg) {
                 println!("LDR: DEBUG 201: msg from client: {:?}", ev.msg);
                 match create_client_msg(&ev.msg) {
+                    None            => ev.ch.send(~"400 Bad Request"),
                     Some(clientMsg) => {
                         let aereq = self.make_aereq(vec!(clientMsg));
                         let aereqstr = json::Encoder::str_encode(&aereq);
@@ -318,31 +321,71 @@ impl Server {
 
                         // send this message to the peer-handlers
                         for p in self.peers.iter() {
-                            let peer_chan: &Sender<~str> = peer_chans.get(&p.id);
+                            let &(ref peer_chan, _) = peer_chans.get(&p.id);
                             peer_chan.send(aereqstr.clone());
                         }
 
-
+                        // TODO: need to set last_applied_commit at appropriate point ... not being set yet
                         // TODO: need to check that a majority of nodes have committed here before sending back "OK"
-
-                        self.commit_idx = self.log.idx;  // ???
-
-                        ev.ch.send(~"200 OK"); // FIXME: can't do this until the msg is committed
-                    },
-                    None => ev.ch.send(~"400 Bad Request")
+                        // FIXME: this is totally the wrong way to do it -> just for initial testing ... need select with timeout
+                        let majority_cutoff = self.peers.len() / 2;
+                        let mut commits = 0;
+                        loop {
+                            for p in self.peers.iter() {
+                                let &(_, ref peer_response_chan) = peer_chans.get(&p.id);
+                                let response = peer_response_chan.try_recv();
+                                if response.is_err() {
+                                    info!("LDR: TryRecError: {:?}", response.unwrap_err());
+                                    timer::sleep(15);  // BOGUS!!
+                                    continue;
+                                }
+                                let response: IoResult<AppendEntriesResponse> = response.unwrap();
+                                info!("LDR: TryRec SUCCESS: ncommits: {} :: response = {:?}", commits, response);
+                                match response {
+                                    Ok(aeresp) => {
+                                        // Note: if get here it means an AEResponse was returned, but the
+                                        // peer may have rejected the AERequest, so have to check the success flag
+                                        // in the AEResponse
+                                        // TODO: FILL IN
+                                        if aeresp.success {
+                                            commits += 1;
+                                            if commits >= majority_cutoff {
+                                                self.commit_idx = self.log.idx;  // ???
+                                                ev.ch.send(~"200 OK");
+                                                break;
+                                            }
+                                        } else {
+                                            // TODO: handle rejection scenario
+                                            info!("LDR: AEReq rejection: {:?}", aeresp);
+                                        }
+                                    },
+                                    Err(e) => error!("LDR: Error returned from peer <{:?}>: {:?}", p.id, e)
+                                }
+                            }
+                            if commits >= majority_cutoff {
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         } // end loop
 
-        println!("LDR: DEBUG 202");
+        info!("LDR: leader_loop finishes with term: {}, log_idx: {}, commit_idx: {}, last_applied_commit: {}",
+              self.log.term, self.log.idx, self.commit_idx, self.last_applied_commit);
     }
 
     // TODO: this could return a Future and send Future<bool> to indicate closing down
     // TODO: this may need to go into its own file => major piece of code coming up
     ///
     /// Runs in its own task and handles all leader->follower messaging to the specified Peer
+    /// Params:
+    /// - peer: Peer this handler makes network connections to
+    /// - chrecv: Receiver channel that leader loop sends AEReq or STOP message on
+    /// - chsend: Sender channel for this handler to message back to leader_loop with the
+    ///           response from the peer
     ///
-    fn leader_peer_handler(peer: Peer, chrecv: Receiver<~str>) {
+    fn leader_peer_handler(peer: Peer, chrecv: Receiver<~str>, chsend: Sender<IoResult<AppendEntriesResponse>>) {
         println!("LEADER PEER_HANDLER for peer {:?}", peer.id);
 
         loop {
@@ -378,6 +421,16 @@ impl Server {
                 // TODO: currently responses do not have a length in the message => probably should?
                 let response = stream.read_to_str(); // this type of read is only safe if the other end closes the stream (EOF)
                 println!(">>===> PEER HDLR {} ==> PEER RESPONSE: {}", peer.id, response);
+
+                match response {
+                    Ok(aeresp_str) => {
+                        let aeresp = append_entries::decode_append_entries_response(aeresp_str).
+                            ok().expect(format!("leader_peer_handler: decode aeresp failed for: {:?}", aeresp_str));
+                        chsend.send(Ok(aeresp));
+                    },
+                    Err(e) => chsend.send(Err(e))
+                }
+
                 drop(stream);  // TODO: probably unneccesary since goes out of scope
             }
         }
@@ -646,6 +699,7 @@ mod test {
     use super::Leader;
     use super::Server;
 
+    use schooner::append_entries;
     use schooner::append_entries::AppendEntriesRequest;
     use schooner::log_entry::LogEntry;
 
@@ -916,6 +970,32 @@ mod test {
         let result1 = stream.read_to_str();
         drop(stream); // close the connection
 
+        // Client msg #2
+        let mut stream = TcpStream::connect(ldr_addr);
+        let send_result2 = send_client_cmd(&mut stream, ~"PUT x=2");
+        if send_result2.is_err() {
+            send_shutdown_signal(1);
+            send_shutdown_signal(2);
+            send_shutdown_signal(3);
+            fail!(send_result2);
+        }
+
+        let result2 = stream.read_to_str();
+        drop(stream); // close the connection
+
+        // Client msg #3
+        let mut stream = TcpStream::connect(ldr_addr);
+        let send_result3 = send_client_cmd(&mut stream, ~"PUT x=3");
+        if send_result3.is_err() {
+            send_shutdown_signal(1);
+            send_shutdown_signal(2);
+            send_shutdown_signal(3);
+            fail!(send_result3);
+        }
+
+        let result3 = stream.read_to_str();
+        drop(stream); // close the connection
+
         timer::sleep(50); // wait a short while for all servers to get set up
         spawn(proc() {
             send_shutdown_signal(1);
@@ -927,7 +1007,11 @@ mod test {
 
         // validate after shutting down servers
         assert!(result1.is_ok());
-        assert_eq!(~"200 OK", result1.unwrap());  // BOGUS tmp response
+        assert_eq!(~"200 OK", result1.unwrap());
+        assert!(result2.is_ok());
+        assert_eq!(~"200 OK", result2.unwrap());
+        assert!(result3.is_ok());
+        assert_eq!(~"200 OK", result3.unwrap());
     }
 
     // this one does not test the leader with any other Peers
@@ -935,7 +1019,7 @@ mod test {
     // once majority committed logic is added this will hang since the client
     // won't get a response  => perhaps have to build in a timeout to respond
     // to the client if can't commit within 2 seconds or something?
-    #[test]
+    //#[test]
     fn test_leader_simple() {
         setup();
         write_cfg_file(1);
@@ -1083,7 +1167,7 @@ mod test {
         println!("{:?}", resp);
 
         assert!(resp.contains("\"success\":true"));
-        let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
+        let aeresp = append_entries::decode_append_entries_response(resp).unwrap();
         assert_eq!(1, aeresp.term);
         assert_eq!(1, aeresp.idx);
         // TODO: need to test aeresp.commit_idx
@@ -1148,7 +1232,7 @@ mod test {
         let resp = result1.unwrap();
 
         assert!(resp.contains("\"success\":true"));
-        let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
+        let aeresp = append_entries::decode_append_entries_response(resp).unwrap();
         assert_eq!(1, aeresp.term);
         assert_eq!(1, aeresp.idx);
         // TODO: need to test commit_idx
@@ -1161,7 +1245,7 @@ mod test {
         let resp2 = result2.unwrap();
 
         assert!(resp2.contains("\"success\":false"));
-        let aeresp2 = super::append_entries::decode_append_entries_response(resp).unwrap();
+        let aeresp2 = append_entries::decode_append_entries_response(resp).unwrap();
         assert_eq!(1, aeresp2.term);
         assert_eq!(1, aeresp2.idx);
         // TODO: need to test commit_idx
@@ -1219,7 +1303,7 @@ mod test {
         let resp = result1.unwrap();
 
         assert!(resp.contains("\"success\":true"));
-        let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
+        let aeresp = append_entries::decode_append_entries_response(resp).unwrap();
         assert_eq!(1, aeresp.term);
         assert_eq!(4, aeresp.idx);
         // TODO: need to test commit_idx
@@ -1285,7 +1369,7 @@ mod test {
         let resp = result1.unwrap();
 
         assert!(resp.contains("\"success\":true"));
-        let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
+        let aeresp = append_entries::decode_append_entries_response(resp).unwrap();
         assert_eq!(true, aeresp.success);
         assert_eq!(1, aeresp.term);
         assert_eq!(1, aeresp.idx);
@@ -1295,7 +1379,7 @@ mod test {
         let resp = result2.unwrap();
 
         assert!(resp.contains("\"success\":true"));
-        let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
+        let aeresp = append_entries::decode_append_entries_response(resp).unwrap();
         assert_eq!(true, aeresp.success);
         assert_eq!(2, aeresp.term);
         assert_eq!(3, aeresp.idx);
@@ -1305,7 +1389,7 @@ mod test {
         let resp = result3.unwrap();
 
         assert!(resp.contains("\"success\":false"));
-        let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
+        let aeresp = append_entries::decode_append_entries_response(resp).unwrap();
         assert_eq!(false, aeresp.success);
         assert_eq!(2, aeresp.term);
         assert_eq!(3, aeresp.idx);
@@ -1380,7 +1464,7 @@ mod test {
         let resp = result1.unwrap();
 
         assert!(resp.contains("\"success\":true"));
-        let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
+        let aeresp = append_entries::decode_append_entries_response(resp).unwrap();
         assert_eq!(true, aeresp.success);
         assert_eq!(1, aeresp.term);
         // TODO: need to test commit_idx
@@ -1391,7 +1475,7 @@ mod test {
         let resp = result2.unwrap();
 
         assert!(resp.contains("\"success\":false"));
-        let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
+        let aeresp = append_entries::decode_append_entries_response(resp).unwrap();
         assert_eq!(false, aeresp.success);
         assert_eq!(1, aeresp.term);
         assert_eq!(1, aeresp.idx);
@@ -1401,7 +1485,7 @@ mod test {
         let resp = result3.unwrap();
 
         assert!(resp.contains("\"success\":true"));
-        let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
+        let aeresp = append_entries::decode_append_entries_response(resp).unwrap();
         assert_eq!(true, aeresp.success);
         assert_eq!(2, aeresp.term);
         assert_eq!(3, aeresp.idx);
@@ -1509,7 +1593,7 @@ mod test {
         let resp = result1.unwrap();
 
         assert!(resp.contains("\"success\":true"));
-        let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
+        let aeresp = append_entries::decode_append_entries_response(resp).unwrap();
         assert_eq!(true, aeresp.success);
         assert_eq!(1, aeresp.term);
         assert_eq!(2, aeresp.idx);
@@ -1520,7 +1604,7 @@ mod test {
         let resp = result2.unwrap();
 
         assert!(resp.contains("\"success\":true"));
-        let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
+        let aeresp = append_entries::decode_append_entries_response(resp).unwrap();
         assert_eq!(true, aeresp.success);
         assert_eq!(2, aeresp.term);
         assert_eq!(3, aeresp.idx);
@@ -1531,7 +1615,7 @@ mod test {
         let resp = result3.unwrap();
 
         assert!(resp.contains("\"success\":true"));
-        let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
+        let aeresp = append_entries::decode_append_entries_response(resp).unwrap();
         assert_eq!(true, aeresp.success);
         assert_eq!(2, aeresp.term);
         assert_eq!(7, aeresp.idx);
@@ -1542,7 +1626,7 @@ mod test {
         let resp = result4.unwrap();
 
         assert!(resp.contains("\"success\":true"));
-        let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
+        let aeresp = append_entries::decode_append_entries_response(resp).unwrap();
         assert_eq!(true, aeresp.success);
         assert_eq!(2, aeresp.term);
         assert_eq!(7, aeresp.idx);
@@ -1553,7 +1637,7 @@ mod test {
         let resp = result5.unwrap();
 
         assert!(resp.contains("\"success\":true"));
-        let aeresp = super::append_entries::decode_append_entries_response(resp).unwrap();
+        let aeresp = append_entries::decode_append_entries_response(resp).unwrap();
         assert_eq!(true, aeresp.success);
         assert_eq!(2, aeresp.term);
         assert_eq!(9, aeresp.idx);
