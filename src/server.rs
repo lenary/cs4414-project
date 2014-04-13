@@ -87,6 +87,9 @@ pub struct CfgOptions {
     // TODO: add more?
 }
 
+///
+/// struct to hold the two parts of a (string-based) client message
+///
 #[deriving(Clone, Show)]
 struct ClientMsg {
     uuid: ~str,
@@ -131,6 +134,7 @@ impl Server {
 
         Ok(s)
     }
+
 
     ///
     /// Central method that sets things up and then runs the server threads/tasks
@@ -178,7 +182,7 @@ impl Server {
             }
             std::io::timer::sleep(1);  // TODO: why is this here? put behind a debug flag?
         }
-        debug!("Serve_loop END");  // TODO: change to debug!
+        debug!("Serve_loop END");
     }
 
 
@@ -187,8 +191,9 @@ impl Server {
 
         loop {
             println!("FLW: DEBUG 0");
-            let timeout = timer.oneshot(2200); // use for detecting lost leader  // TODO: adjust this time
+            let timeout = timer.oneshot(1000); // use for detecting lost leader  // TODO: adjust this time
 
+            // select over timeout channel and network_listener port (receiver)
             let sel = Select::new();
             let mut pt = sel.handle(&self.p);
             let mut timeout = sel.handle(&timeout);
@@ -236,7 +241,7 @@ impl Server {
                                                   commit_idx: self.commit_idx}
                         },
                         Err(e) => {
-                            error!("******>>>>>>>>>>>>>> {:?}", e);
+                            error!("server.follower_loop: ERROR {:?}", e);
                             AppendEntriesResponse{success: false,
                                                   term: self.log.term,
                                                   idx: self.log.idx,
@@ -259,12 +264,6 @@ impl Server {
     fn leader_loop(&mut self) {
         info!("leader loop with id = {:?}", self.id);
 
-
-        // TODO: this needs to go into the loop below and have Select behavior over multiple chans
-        let mut timer = Timer::new().unwrap();
-        let timeout = timer.oneshot(100); // frequency of heartbeat to followers  // TODO: parameterize this time
-        timeout.recv();
-
         // TODO: change this to a Vec<(peer.id, chsend)> and just search linearly through it => no need for full hashmap
         //       or implement some simple ArrayHashMap like Clojure has
         let mut peer_chans: HashMap<uint, (Sender<~str>, Receiver<IoResult<AppendEntriesResponse>>)> = HashMap::new();
@@ -284,8 +283,7 @@ impl Server {
             });
         }
 
-        // now wait for network msgs (or timeout -> need to add timeout)
-        // TODO: should be in loop
+        // now wait for network msgs (or timeout) // TODO: need to add timeout
         loop {
             println!("in leader loop for = {:?} :: waiting on self.p", self.id);
 
@@ -299,6 +297,68 @@ impl Server {
                     peer_chan.send(~"STOP");
                 }
                 break;
+
+            // }
+            // // TODO: remove the `!` => this is just to code in parallel and get it compiling
+            // else if ! is_cmd_from_client(ev.msg) {
+            //     println!("LDR: DEBUG 201x: msg from client: {:?}", ev.msg);
+            //     match create_client_msg(&ev.msg) {
+            //         None            => ev.ch.send(~"400 Bad Request"),
+            //         Some(clientMsg) => {
+            //             let aereq = self.make_aereq(vec!(clientMsg));
+            //             let aereqstr = json::Encoder::str_encode(&aereq);
+
+            //             // first log it to own leader log
+            //             match self.log.append_entries(&aereq) {
+            //                 Ok(_)  => (),
+            //                 Err(e) => {
+            //                     // TODO: probably need to keep a count of these failures => if more than 2, the leader should shut down?
+            //                     error!("leader_loop log.append_entries ERROR: {:?}", e);
+            //                     ev.ch.send(~"500 Server Error: unable to log command on leader");
+            //                     continue;
+            //                 }
+            //             };
+
+            //             // send this message to the peer-handlers
+            //             for p in self.peers.iter() {
+            //                 let &(ref peer_chan, _) = peer_chans.get(&p.id);
+            //                 peer_chan.send(aereqstr.clone());
+            //             }
+            //             // TODO: need to check that a majority of nodes have committed here before sending back "OK"
+
+            //             let select = Select::new();
+            //             let mut timer = Timer::new().unwrap();
+            //             let timeout = timer.oneshot(100); // TODO: parameterize this time based on heartbeat timeout (should be 1/2?)
+
+            //             // THIS IS WRONG => send a common shared chan to all the peer-handlers => then have a known number
+            //             // and use the select! macro !!!!!!!!!!!
+            //             let mut timeout = select.handler(&timeout);
+            //             let mut vec_response_chans = Vec::with_capacity(self.peers.len());
+            //             unsafe{ timeout.add() };
+
+            //             for p in self.peers.iter() {
+            //                 let &(_, ref peer_response_chan) = peer_chans.get(&p.id);
+            //                 let mut response_chan = select.handler(peer_response_chan);
+            //                 unsafe{ response_chan.add() };
+            //                 vec_response_chans.put(response_chan);
+            //             }
+
+            //             let choice = select.wait();
+            //             if choice == timeout.id() {
+            //                 println!("LDR: TIMEOUT => what do I do now???");
+            //             } else {
+            //                 vec_response_chans.
+            //             }
+
+            //             // TODO: remove
+            //             select! (
+            //                 () = timeout.recv() => println!("LDR: TIMEOUT => what do I do now???"),
+            //                 answer = rx2.recv() => {
+            //                     println!("the answer was: {}", answer);
+            //                 }
+            //             )
+            //         } // end Some
+            //     } // end match create_client_msg
 
             } else if is_cmd_from_client(ev.msg) {
                 println!("LDR: DEBUG 201: msg from client: {:?}", ev.msg);
@@ -326,7 +386,6 @@ impl Server {
                         }
 
                         // TODO: need to set last_applied_commit at appropriate point ... not being set yet
-                        // TODO: need to check that a majority of nodes have committed here before sending back "OK"
                         // FIXME: this is totally the wrong way to do it -> just for initial testing ... need select with timeout
                         let majority_cutoff = self.peers.len() / 2;
                         let mut commits = 0;
