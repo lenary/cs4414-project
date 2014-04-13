@@ -14,7 +14,7 @@ use schooner::log_entry;
 ///
 /// The first valid term and idx is 1.
 /// A term or idx of 0 means "UKNOWN".
-/// 
+///
 pub struct Log {
     pub file: File,      // open File with Append/Write state
     pub path: Path,      // path to log
@@ -70,7 +70,7 @@ impl Log {
             return Err(IoError{kind: InvalidInput,
                                desc: "term mismatch at prev_log_idx",
                                detail: Some(format!("term in follower is {:u}", self.term))});
-        } 
+        }
         for e in aereq.entries.iter() {
             try!(self.append_entry(e));
         }
@@ -90,7 +90,7 @@ impl Log {
                                desc: "term violation",
                                detail: Some(errmsg)});
 
-        } else if entry.term == self.term && entry.idx <= self.idx {
+        } else if entry.term == self.term && entry.idx <= self.idx && entry.idx != 0 {
             // TODO: does this stage need a truncation? (I think not)
             let errmsg = format!("schooner.Log: Cannot append entry with earlier index in the same term ({:u}:{:u} <= {:u}:{:u})",
                                  entry.term, entry.idx,
@@ -106,7 +106,7 @@ impl Log {
         self.idx = entry.idx;
         self.term = entry.term;
         self.idx_term_hist.push((entry.idx, entry.term));
-        
+
         Ok(())
     }
 
@@ -119,7 +119,7 @@ impl Log {
     pub fn truncate(&mut self, entry_idx: u64) -> IoResult<()> {
         let r: u64 = rand::random();
         let tmppath = Path::new(format!("{}-{:u}", self.path.display(), r));
-        
+
         {
             let file = try!(File::open_mode(&self.path, Open, Read));
             let tmpfile = try!(File::open_mode(&tmppath, Open, Write));
@@ -153,11 +153,11 @@ impl Log {
             self.idx = idx;
             self.term = trm;
         }
-        
+
         // now rename/swap files
         try!(fs::unlink(&self.path));
         try!(fs::rename(&tmppath,&self.path));
-        
+
         // restore self.file to append to end of newly truncated file
         self.file = try!(File::open_mode(&self.path, Append, Write));
         Ok(())

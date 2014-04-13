@@ -26,7 +26,7 @@ pub fn decode_log_entry(json_str: &str) -> Result<LogEntry, json::Error> {
 mod test {
     use serialize::{json, Decodable};
     use uuid::Uuid;
-    
+
     #[test]
     fn test_json_encode_of_LogEntry() {
         let uuidstr = Uuid::new_v4().to_hyphenated_str();
@@ -38,7 +38,7 @@ mod test {
         assert!(jstr.contains("\"data\":\"wc\""));
         assert!(jstr.contains(format!("\"uuid\":\"{}\"", uuidstr)));
     }
-    
+
     #[test]
     fn test_json_decode_of_LogEntry() {
         let jstr = ~r##"{"idx": 200, "term": 4, "data": "foo", "uuid": "4343"}"##;
@@ -47,7 +47,7 @@ mod test {
 
         let mut decoder = json::Decoder::new(jobj.unwrap());
         let logentry: super::LogEntry = Decodable::decode(&mut decoder).unwrap();
-        
+
         assert_eq!(200, logentry.idx);
         assert_eq!(4, logentry.term);
         assert_eq!(~"foo", logentry.data);
@@ -72,5 +72,5 @@ mod test {
         let jstr = ~"{abc}";
         let result = super::decode_log_entry(jstr);
         assert!(result.is_err());
-    }    
+    }
 }

@@ -282,7 +282,7 @@ impl Server {
         // TODO: should be in loop
         loop {
             println!("in leader loop for = {:?} :: waiting on self.p", self.id);
-            
+
             let ev = self.p.recv();
             debug!("follower: event message: {}", ev.msg);
             if is_stop_msg(ev.msg) {
@@ -301,12 +301,27 @@ impl Server {
                         let aereq = self.make_aereq(vec!(clientMsg));
                         let aereqstr = json::Encoder::str_encode(&aereq);
 
+                        // first log it to own leader log
+                        match self.log.append_entries(&aereq) {
+                            Ok(_)  => (),
+                            Err(e) => {
+                                // TODO: probably need to keep a count of these failures => if more than 2, the leader should shut down?
+                                error!("leader_loop log.append_entries ERROR: {:?}", e);
+                                ev.ch.send(~"500 Server Error: unable to log command on leader");
+                                continue;
+                            }
+                        };
 
-                        // TODO: need to send this message to the peer-handlers
+                        // send this message to the peer-handlers
                         for p in self.peers.iter() {
                             let peer_chan: &Sender<~str> = peer_chans.get(&p.id);
                             peer_chan.send(aereqstr.clone());
                         }
+
+
+                        // TODO: need to check that a majority of nodes have committed here before sending back "OK"
+
+                        self.commit_idx = self.log.idx;  // ???
 
                         ev.ch.send(~"200 OK"); // FIXME: can't do this until the msg is committed
                     },
@@ -325,7 +340,7 @@ impl Server {
     ///
     fn leader_peer_handler(peer: Peer, chrecv: Receiver<~str>) {
         println!("LEADER PEER_HANDLER for peer {:?}", peer.id);
-        
+
         loop {
             let msg = chrecv.recv();
             if msg == ~"STOP" {
@@ -450,6 +465,15 @@ fn get_leader_ptr(aereq: &AppendEntriesRequest, peers: &Vec<Peer>) -> int {
 }
 
 
+///
+/// The incoming message should be of the format:
+/// "Uuid: <some-uuid>\n<cmd>",
+/// e.g,:
+/// "Uuid: 15a0779e-5881-45ac-9739-cd22d7454d9b\nPUT x=1"
+/// The message is split into the component uuid and cmd
+/// parts and put into a ClientMsg struct, which is returned.
+/// If the message doesn't match that format, then None is returned.
+///
 fn create_client_msg(msg: &~str) -> Option<ClientMsg> {
     let parts: ~[&str] = msg.splitn('\n', 1).collect();
     if parts.len() != 2 {
@@ -712,8 +736,16 @@ mod test {
     }
 
 
-    fn tear_down() {
-        let filepath = Path::new(S1TEST_PATH);
+    fn setup() {
+        let mut filepath = Path::new(S1TEST_PATH);
+        let _ = fs::unlink(&filepath);
+        filepath = Path::new(S2TEST_PATH);
+        let _ = fs::unlink(&filepath);
+        filepath = Path::new(S3TEST_PATH);
+        let _ = fs::unlink(&filepath);
+        filepath = Path::new(S4TEST_PATH);
+        let _ = fs::unlink(&filepath);
+        filepath = Path::new(S5TEST_PATH);
         let _ = fs::unlink(&filepath);
         let cfgpath = Path::new(TEST_CFG);
         let _ = fs::unlink(&cfgpath);
@@ -835,6 +867,7 @@ mod test {
     /* ---[ tests ]--- */
     #[test]
     fn test_leader_with_followers() {
+        setup();
         write_cfg_file(3);
 
         // start leader
@@ -862,7 +895,7 @@ mod test {
         timer::sleep(150); // wait a short while for all servers to get set up
 
         let ldr_addr = start_result1.unwrap();
-        
+
         // now send client messages to leader
         // Client msg #1
         let mut stream = TcpStream::connect(ldr_addr);
@@ -875,7 +908,7 @@ mod test {
         }
 
         let result1 = stream.read_to_str();
-        drop(stream); // close the connection        
+        drop(stream); // close the connection
 
         timer::sleep(50); // wait a short while for all servers to get set up
         spawn(proc() {
@@ -889,8 +922,6 @@ mod test {
         // validate after shutting down servers
         assert!(result1.is_ok());
         assert_eq!(~"200 OK", result1.unwrap());  // BOGUS tmp response
-        
-        tear_down();
     }
 
     // this one does not test the leader with any other Peers
@@ -898,15 +929,17 @@ mod test {
     // once majority committed logic is added this will hang since the client
     // won't get a response  => perhaps have to build in a timeout to respond
     // to the client if can't commit within 2 seconds or something?
-    //#[test]
+    #[test]
     fn test_leader_simple() {
+        setup();
         write_cfg_file(1);
+
         let svr_id = 1;
         let start_result = start_server(svr_id, Some(CfgOptions {init_state: Leader}));
         if start_result.is_err() {
             fail!("{:?}", start_result);
         }
-        timer::sleep(400);
+        timer::sleep(350);
 
         let addr = start_result.unwrap();
 
@@ -940,19 +973,18 @@ mod test {
 
         assert!(result2.is_ok());
         assert_eq!(~"200 OK", result2.unwrap());  // BOGUS tmp response
-
-        tear_down();
     }
 
-    //#[test]
+    #[test]
     fn test_follower_to_send_client_redirect_when_leader_is_unknown() {
+        setup();
         write_cfg_file(3);
         let svr_id = 1;
         let start_result = start_server(svr_id, None);
         if start_result.is_err() {
             fail!("{:?}", start_result);
         }
-        timer::sleep(400); // wait a short while for the leader to get set up and listening on its socket
+        timer::sleep(350); // wait a short while for the leader to get set up and listening on its socket
 
         let addr = start_result.unwrap();
         let mut stream = TcpStream::connect(addr);
@@ -972,19 +1004,18 @@ mod test {
 
         assert!( resp.contains("Redirect: 127.0.0.1:231") );
         assert!( !resp.contains("Redirect: 127.0.0.1:23158") );
-
-        tear_down();
     }
 
-    //#[test]
+    #[test]
     fn test_follower_to_send_client_redirect_when_leader_is_known() {
+        setup();
         write_cfg_file(3);
         let svr_id = 2;
         let start_result = start_server(svr_id, None);
         if start_result.is_err() {
             fail!("{:?}", start_result);
         }
-        timer::sleep(400); // wait a short while for the leader to get set up and listening on its socket
+        timer::sleep(350); // wait a short while for the leader to get set up and listening on its socket
 
         let addr = start_result.unwrap();
         let mut stream = TcpStream::connect(addr);
@@ -1013,19 +1044,18 @@ mod test {
         let resp = result2.unwrap();
 
         assert!(resp.contains(format!("Redirect: 127.0.0.1:{}", S1TEST_PORT)));
-
-        tear_down();
     }
 
-    //#[test]
+    #[test]
     fn test_follower_with_single_AppendEntryRequest() {
+        setup();   // TODO: is there a better way to ensure a fn is called if an assert fails?
         write_cfg_file(1);
         let svr_id = 1;
         let start_result = start_server(svr_id, None);
         if start_result.is_err() {
             fail!("{:?}", start_result);
         }
-        timer::sleep(400); // wait a short while for the leader to get set up and listening on its socket
+        timer::sleep(350); // wait a short while for the leader to get set up and listening on its socket
 
         let addr = start_result.unwrap();
         let mut stream = TcpStream::connect(addr);
@@ -1069,25 +1099,25 @@ mod test {
         // should only be one entry in the file
         readres = br.read_line();
         assert!(readres.is_err());
-
-        tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
     }
 
-    //#[test]
+    #[test]
     fn test_follower_with_same_AppendEntryRequest_twice_should_return_false_2nd_time() {
+        setup();
         write_cfg_file(1);
+
         let svr_id = 1;
         let start_result = start_server(svr_id, None);
         if start_result.is_err() {
             fail!("{:?}", start_result);
         }
-        timer::sleep(400); // wait a short while for the leader to get set up and listening on its socket
+        timer::sleep(350); // wait a short while for the leader to get set up and listening on its socket
 
         let addr = start_result.unwrap();
         let mut stream = TcpStream::connect(addr);
 
         // test case task acts as leader sending AEReq
-        
+
         /* ---[ send logentry1 (term1) ]--- */
 
         let logentry1 = send_aereq1(&mut stream);
@@ -1148,19 +1178,18 @@ mod test {
         // should only be one entry in the file
         readres = br.read_line();
         assert!(readres.is_err());
-
-        tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
     }
 
-    //#[test]
+    #[test]
     fn test_follower_with_multiple_valid_AppendEntryRequests() {
+        setup();
         write_cfg_file(1);
         let svr_id = 1;
         let start_result = start_server(svr_id, None);
         if start_result.is_err() {
             fail!("{:?}", start_result);
         }
-        timer::sleep(400); // wait a short while for the leader to get set up and listening on its socket
+        timer::sleep(350); // wait a short while for the leader to get set up and listening on its socket
 
         let addr = start_result.unwrap();
         let mut stream = TcpStream::connect(addr);
@@ -1189,20 +1218,19 @@ mod test {
         assert_eq!(4, aeresp.idx);
         // TODO: need to test commit_idx
         assert_eq!(true, aeresp.success);
-
-        tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
     }
 
     // TODO: test commit_idx as well
-    //#[test]
+    #[test]
     fn test_follower_with_AppendEntryRequests_with_invalid_term() {
+        setup();
         write_cfg_file(1);
         let svr_id = 1;
         let start_result = start_server(svr_id, None);
         if start_result.is_err() {
             fail!("{:?}", start_result);
         }
-        timer::sleep(400); // wait a short while for the leader to get set up and listening on its socket
+        timer::sleep(350); // wait a short while for the leader to get set up and listening on its socket
 
         let addr = start_result.unwrap();
         let mut stream = TcpStream::connect(addr);
@@ -1275,19 +1303,19 @@ mod test {
         assert_eq!(false, aeresp.success);
         assert_eq!(2, aeresp.term);
         assert_eq!(3, aeresp.idx);
-
-        tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
     }
 
-    //#[test]
+    #[test]
     fn test_follower_with_AppendEntryRequests_with_invalid_prevLogTerm() {
+        setup();
         write_cfg_file(1);
+
         let svr_id = 1;
         let start_result = start_server(svr_id, None);
         if start_result.is_err() {
             fail!("{:?}", start_result);
         }
-        timer::sleep(400); // wait a short while for the leader to get set up and listening on its socket
+        timer::sleep(350); // wait a short while for the leader to get set up and listening on its socket
 
         let addr = start_result.unwrap();
         let mut stream = TcpStream::connect(addr);
@@ -1371,20 +1399,19 @@ mod test {
         assert_eq!(true, aeresp.success);
         assert_eq!(2, aeresp.term);
         assert_eq!(3, aeresp.idx);
-
-        tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
     }
 
 
-    //#[test]
+    #[test]
     fn test_follower_with_AppendEntryRequests_with_changing_commit_idx() {
+        setup();
         write_cfg_file(1);
         let svr_id = 1;
         let start_result = start_server(svr_id, None);
         if start_result.is_err() {
             fail!("{:?}", start_result);
         }
-        timer::sleep(400); // wait a short while for the leader to get set up and listening on its socket
+        timer::sleep(350); // wait a short while for the leader to get set up and listening on its socket
 
         let addr = start_result.unwrap();
         let mut stream = TcpStream::connect(addr);
@@ -1525,7 +1552,5 @@ mod test {
         assert_eq!(2, aeresp.term);
         assert_eq!(9, aeresp.idx);
         assert_eq!(9, aeresp.commit_idx);  // key test => 9, not 10 (as leader said)
-
-        tear_down();   // TODO: is there a better way to ensure a fn is called if an assert fails?
     }
 }
