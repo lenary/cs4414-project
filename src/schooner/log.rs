@@ -24,7 +24,6 @@ pub struct Log {
 }
 
 impl Log {
-    #[allow(deprecated_owned_vector)]  // TODO: remove later
     pub fn new(path: Path) -> IoResult<~Log> {
         let mut start_idx = 0;
         let mut term = 0;
@@ -65,7 +64,7 @@ impl Log {
                                detail: Some(format!("log idx in follower is {:u}", self.idx))});
 
         }
-        if aereq.prev_log_term != self.term {
+        if aereq.prev_log_term != self.term && self.term != 0 {
             try!(self.truncate(aereq.prev_log_term));
             return Err(IoError{kind: InvalidInput,
                                desc: "term mismatch at prev_log_idx",

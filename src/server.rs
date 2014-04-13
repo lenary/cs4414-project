@@ -65,18 +65,18 @@ pub struct Server {
     peers: Vec<Peer>,          // peer servers
     leader: int,               // "pointer" to peer that is current leader (idx into peers Vec)  // TODO: should this be &Peer?
 
-    c: Sender<~Event>,  // TODO: keep chan or port?
+    c: Sender<~Event>,  // TODO: keep chan/sender?
     p: Receiver<~Event>,
 
-    // more later
+    // more later?
 }
 
 // TODO: does this need to be enhanced?
 pub struct Event {
-    msg: ~str,  // just to get started
+    msg: ~str,
     // target: ??,
     // return_val: ??,
-    ch: Sender<~str>,
+    ch: Sender<~str>,  // TODO: document what this is for
 }
 
 // TODO: may get rid of this once elections are set up
@@ -144,16 +144,19 @@ impl Server {
         }
 
         match opt {
-            Some(cfg) => self.state = cfg.init_state,
+            Some(cfg) => {
+                self.state = cfg.init_state;
+                if self.state == Leader && self.log.term == 0 {
+                    self.log.term = 1;
+                }
+            },
             None => self.state = Follower
         }
-
 
         let event_chan = self.c.clone();
         let conx_str = format!("{}:{:u}", &self.ip, self.tcpport);
         let svr_id = self.id;
         spawn(proc() {
-            // FIXME: needs to be a separate file/impl ??
             network_listener(conx_str, event_chan, svr_id);
         });
 
@@ -202,14 +205,14 @@ impl Server {
 
             } else if ret == pt.id() {  // received event from network_listener
                 let ev = pt.recv();
-                debug!("follower: event message: {}", ev.msg);
+                info!("follower: event message: {}", ev.msg);
                 if is_stop_msg(ev.msg) {
                     println!("FLW: DEBUG 2");
                     self.state = Stopped;
                     break;
 
                 } else if is_cmd_from_client(ev.msg) {  // redirect to leader
-                    debug!("redirecting client to leader");
+                    info!("redirecting client to leader");
                     ev.ch.send( self.redirect_msg() );
 
                 } else {
@@ -253,8 +256,9 @@ impl Server {
     }
 
     fn leader_loop(&mut self) {
-        println!("leader loop with id = {:?}", self.id);
-
+        info!("leader loop with id = {:?}", self.id);
+        
+        
         // TODO: this needs to go into the loop below with Select behavior
         let mut timer = Timer::new().unwrap();
         let timeout = timer.oneshot(100); // frequency of heartbeat to followers  // TODO: parameterize this time
@@ -388,14 +392,16 @@ impl Server {
     }
 
     ///
-    /// Builds AEReq with no entries.
-    /// Called by Leader to send AEReqs with followers
+    /// Builds AEReq with specified entries (which may be none).
+    /// Called by Leader to send AEReqs to followers.
     /// To send a heartbeat message, pass in an empty vector.
     ///
-    fn make_aereq(&self, entry_msgs: Vec<ClientMsg>) -> AppendEntriesRequest {
+    fn make_aereq(&mut self, entry_msgs: Vec<ClientMsg>) -> AppendEntriesRequest {
         let mut entries: Vec<LogEntry> = Vec::with_capacity(entry_msgs.len());
+        let mut count = 0u64;
         for cmsg in entry_msgs.move_iter() {
-            let ent = LogEntry {idx: self.log.idx,
+            count += 1;
+            let ent = LogEntry {idx: self.log.idx + count,
                                 term: self.log.term,
                                 data: cmsg.cmd.clone(),
                                 uuid: cmsg.uuid};
@@ -880,7 +886,7 @@ mod test {
         // start follower, svr 2
         let start_result2 = start_server(2, None);
         if start_result2.is_err() {
-            // send_shutdown_signal(1);
+            send_shutdown_signal(1);
             fail!("resul2.is_err: {:?}", start_result2);
         }
 
