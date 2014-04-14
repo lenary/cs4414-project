@@ -1,7 +1,12 @@
-* TODO Add in concept of peers
-* TODO If a follower gets a client request, does it have the information needed to send it to the leader?
+# 13-Apr
+* QUESTION Should followers send AEResp after a heartbeat AEReq ??
+** Maybe yes, but then the peer handlers should send the response to the leader_loop ?
+* TODO Need to read go-raft code to see how it handles heartbeat logic 
+* IDEA Could have a separate heartbeat thread and when get msg from leader_loop that a message is sent, reset the timer
 
 # 05-Apr
+* DONE Add in concept of peers
+* DONE If a follower gets a client request, does it have the information needed to send it to the leader?
 * Starting to add stateMachine (goraft useless as usual)
 * DONE How does a follow know the commit_idx at startup?
 * DONE Does the commit_idx need to be written to disk somewhere? Or is it assumed to be the prev_log_idx and revised as more information comes in?

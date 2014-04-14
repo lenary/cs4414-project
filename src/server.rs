@@ -31,7 +31,7 @@ pub mod schooner;
 pub mod serror;  // TODO: remove?
 
 static DEFAULT_HEARTBEAT_INTERVAL: u64 = 50;   // in millis
-// static DEFAULT_ELECTION_TIMEOUT  : u64 = 150;  // in millis
+static DEFAULT_ELECTION_TIMEOUT  : u64 = 150;  // in millis
 static STOP_MSG: &'static str = "STOP";   // '
 static UNKNOWN: u64     = 0u64;  // used for idx and term
 static UNKNOWN_LDR: int = -1;
@@ -68,6 +68,8 @@ pub struct Server {
     c: Sender<~Event>,  // TODO: keep chan/sender?
     p: Receiver<~Event>,
 
+    heartbeat_interval: u64,
+    election_timeout: u64,
     // more later?
 }
 
@@ -129,6 +131,8 @@ impl Server {
             leader: UNKNOWN_LDR,
             c: ch,
             p: pt,
+            heartbeat_interval: DEFAULT_HEARTBEAT_INTERVAL,  // TODO: need to parameterize
+            election_timeout: DEFAULT_ELECTION_TIMEOUT,      // TODO: need to parameterize
         };
 
         Ok(s)
@@ -289,6 +293,8 @@ impl Server {
         loop {
             println!("in leader loop for = {:?} :: waiting on self.p", self.id);
 
+            // TODO: this design won't work => will hang if no client activity and miss sending heartbeat
+            //       this needs its own select or should be conbined with the select down below
             let ev = self.p.recv();
             debug!("follower: event message: {}", ev.msg);
             if is_stop_msg(ev.msg) {
@@ -299,7 +305,6 @@ impl Server {
                     peer_chan.send(~"STOP");
                 }
                 break;
-
 
             } else if is_cmd_from_client(ev.msg) {
                 println!("LDR: DEBUG 201: msg from client: {:?}", ev.msg);
@@ -332,10 +337,13 @@ impl Server {
                         let mut commits = 0;
                         loop {
                             let mut timer = Timer::new().unwrap();
-                            let timeout = timer.oneshot(DEFAULT_HEARTBEAT_INTERVAL); // TODO: parameterize this
+                            let timeout = timer.oneshot(self.heartbeat_interval); // TODO: parameterize this
 
                             select! (
-                                ()   = timeout.recv() => println!("LDR: TIMEOUT => what do I do now???"),
+                                ()   = timeout.recv() => {
+                                    info!("LDR: TIMEOUT while waiting for responses from peer handlers ... should sent heartbeat msg");
+                                    // self.send_heartbeat_msg()
+                                },
                                 resp = chrecv_response.recv() => {
                                     println!("the answer was: {}", resp);  // BOGUS
                                     match resp {
@@ -366,6 +374,8 @@ impl Server {
                         }
                     }
                 }
+            } else {
+                error!("LDR: Received message of unknown type: {:?}", ev.msg);
             }
         } // end main loop
 
@@ -923,8 +933,8 @@ mod test {
     }
 
     /* ---[ tests ]--- */
-    #[test]
-    fn test_leader_with_followers() {
+    //#[test]
+    fn test_leader_with_2_followers_both_active() {
         setup();
         write_cfg_file(3);
 
@@ -1012,55 +1022,101 @@ mod test {
         assert_eq!(~"200 OK", result3.unwrap());
     }
 
-    // this one does not test the leader with any other Peers
-    // it works right now since there is no majority committed logic
-    // once majority committed logic is added this will hang since the client
-    // won't get a response  => perhaps have to build in a timeout to respond
-    // to the client if can't commit within 2 seconds or something?
-    //#[test]
-    fn test_leader_simple() {
+
+    // one follower experiences "network partition" phase, but since 2/3 of cluster still
+    // up the commits should happen
+    // FIXME: this one is not working yet => won't work until we get heartbeats working
+    // #[test]
+    fn test_leader_with_2_followers_with_one_active_first_then_second_joins_later() {
         setup();
-        write_cfg_file(1);
+        write_cfg_file(3);
 
-        let svr_id = 1;
-        let start_result = start_server(svr_id, Some(CfgOptions {init_state: Leader}));
-        if start_result.is_err() {
-            fail!("{:?}", start_result);
+        // start leader
+        let start_result1 = start_server(1, Some(CfgOptions{init_state: Leader}));
+        if start_result1.is_err() {
+            fail!("{:?}", start_result1);
         }
-        timer::sleep(350);
+        timer::sleep(50); // wait a short while for the leader to get set up and ready to msg followers
 
-        let addr = start_result.unwrap();
+        // start follower, svr 2
+        let start_result2 = start_server(2, None);
+        if start_result2.is_err() {
+            send_shutdown_signal(1);
+            fail!("resul2.is_err: {:?}", start_result2);
+        }
 
+        // DO NOT start follower svr 3 at first - simulate network partition
+        timer::sleep(150); // wait a short while for all servers to get set up
+
+        let ldr_addr = start_result1.unwrap();
+
+        // now send client messages to leader
         // Client msg #1
-        let mut stream = TcpStream::connect(addr);
+        let mut stream = TcpStream::connect(ldr_addr);
         let send_result1 = send_client_cmd(&mut stream, ~"PUT x=1");
         if send_result1.is_err() {
-            send_shutdown_signal(svr_id);
+            send_shutdown_signal(1);
+            send_shutdown_signal(2);
+            send_shutdown_signal(3);
             fail!(send_result1);
         }
 
         let result1 = stream.read_to_str();
         drop(stream); // close the connection
 
+        info!("%%%>>>============ during network partition: result1: {:?}", result1);
+    }
 
-        // Client msg #2
-        let mut stream = TcpStream::connect(addr);
-        let send_result2 = send_client_cmd(&mut stream, ~"PUT x=2");
-        if send_result2.is_err() {
-            send_shutdown_signal(svr_id);
-            fail!(send_result2);
-        }
 
-        let result2 = stream.read_to_str();
-        drop(stream); // close the connection
+    // this one does not test the leader with any other Peers
+    // it works right now since there is no majority committed logic
+    // once majority committed logic is added this will hang since the client
+    // won't get a response  => perhaps have to build in a timeout to respond
+    // to the client if can't commit within 2 seconds or something?
+    // #[test]
+    fn test_leader_simple() {
+        // setup();
+        // write_cfg_file(1);
 
-        send_shutdown_signal(svr_id);
+        // let svr_id = 1;
+        // let start_result = start_server(svr_id, Some(CfgOptions {init_state: Leader}));
+        // if start_result.is_err() {
+        //     fail!("{:?}", start_result);
+        // }
+        // timer::sleep(350);
 
-        assert!(result1.is_ok());
-        assert_eq!(~"200 OK", result1.unwrap());  // BOGUS tmp response
+        // let addr = start_result.unwrap();
 
-        assert!(result2.is_ok());
-        assert_eq!(~"200 OK", result2.unwrap());  // BOGUS tmp response
+        // // Client msg #1
+        // let mut stream = TcpStream::connect(addr);
+        // let send_result1 = send_client_cmd(&mut stream, ~"PUT x=1");
+        // if send_result1.is_err() {
+        //     send_shutdown_signal(svr_id);
+        //     fail!(send_result1);
+        // }
+
+        // let result1 = stream.read_to_str();
+        // drop(stream); // close the connection
+
+
+        // // Client msg #2
+        // let mut stream = TcpStream::connect(addr);
+        // let send_result2 = send_client_cmd(&mut stream, ~"PUT x=2");
+        // if send_result2.is_err() {
+        //     send_shutdown_signal(svr_id);
+        //     fail!(send_result2);
+        // }
+
+        // let result2 = stream.read_to_str();
+        // drop(stream); // close the connection
+
+        // send_shutdown_signal(svr_id);
+
+        // assert!(result1.is_ok());
+        // assert_eq!(~"200 OK", result1.unwrap());  // BOGUS tmp response
+
+        // assert!(result2.is_ok());
+        // assert_eq!(~"200 OK", result2.unwrap());  // BOGUS tmp response
     }
 
     #[test]
