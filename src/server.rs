@@ -30,8 +30,8 @@ use serror::{InvalidState,SError};
 pub mod schooner;
 pub mod serror;  // TODO: remove?
 
-// static DEFAULT_HEARTBEAT_INTERVAL: uint = 50;   // in millis
-// static DEFAULT_ELECTION_TIMEOUT  : uint = 150;  // in millis
+static DEFAULT_HEARTBEAT_INTERVAL: u64 = 50;   // in millis
+// static DEFAULT_ELECTION_TIMEOUT  : u64 = 150;  // in millis
 static STOP_MSG: &'static str = "STOP";   // '
 static UNKNOWN: u64     = 0u64;  // used for idx and term
 static UNKNOWN_LDR: int = -1;
@@ -267,7 +267,6 @@ impl Server {
 
         // TODO: change this to a Vec<(peer.id, chsend)> and just search linearly through it => no need for full hashmap
         //       or implement some simple ArrayHashMap like Clojure has
-        // let mut peer_chans: HashMap<uint, (Sender<~str>, Receiver<IoResult<AppendEntriesResponse>>)> = HashMap::new();
         let mut peer_chans: HashMap<uint, Sender<~str>> = HashMap::new();
 
         // spawn the peer handler tasks
@@ -329,12 +328,11 @@ impl Server {
 
                         // TODO: can we put the below loop in its own method ???
                         // TODO: need to set last_applied_commit at appropriate point ... not being set yet
-                        // FIXME: this is totally the wrong way to do it -> just for initial testing ... need select with timeout
                         let majority_cutoff = self.peers.len() / 2;
                         let mut commits = 0;
                         loop {
                             let mut timer = Timer::new().unwrap();
-                            let timeout = timer.oneshot(500); // TODO: parameterize this time based on heartbeat timeout (should be 1/2?)
+                            let timeout = timer.oneshot(DEFAULT_HEARTBEAT_INTERVAL); // TODO: parameterize this
 
                             select! (
                                 ()   = timeout.recv() => println!("LDR: TIMEOUT => what do I do now???"),
