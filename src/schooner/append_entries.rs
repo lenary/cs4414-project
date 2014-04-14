@@ -29,6 +29,7 @@ pub struct AppendEntriesResponse {
     // additional Schooner info
     pub idx: u64,        // idx of last log entry in follower's log after processing last AEReq
     pub commit_idx: u64, // idx of last log entry committed in follower's log after processing last AEReq
+    pub peer_id: uint,   // id of the peer (follower) sending the response
 }
 
 pub fn decode_append_entries_request(json_str: &str) -> Result<AppendEntriesRequest, json::Error> {
@@ -62,17 +63,18 @@ mod test {
         let aeresp = super::AppendEntriesResponse{success: true,
                                                   term: 33,
                                                   idx: 22,
-                                                  commit_idx: 5};
+                                                  commit_idx: 5,
+                                                  peer_id: 2};
 
         let jstr = json::Encoder::str_encode(&aeresp);
         assert!(jstr.len() > 0);
         assert!(jstr.contains("\"success\":true"));
-        assert_eq!(~"{\"success\":true,\"term\":33,\"idx\":22,\"commit_idx\":5}", jstr);
+        assert_eq!(~"{\"success\":true,\"term\":33,\"idx\":22,\"commit_idx\":5,\"peer_id\":2}", jstr);
     }
 
     #[test]
     fn test_json_decode_of_AppendEntriesResponse() {
-        let jstr = ~"{\"success\":false,\"term\":777,\"idx\":1,\"commit_idx\":1}";
+        let jstr = ~"{\"success\":false,\"term\":777,\"idx\":1,\"commit_idx\":1,\"peer_id\":2}";
 
         let jobj = json::from_str(jstr);
         assert!( jobj.is_ok() );
@@ -84,11 +86,12 @@ mod test {
         assert_eq!(777, aeresp.term);
         assert_eq!(1, aeresp.idx);
         assert_eq!(1, aeresp.commit_idx);
+        assert_eq!(2, aeresp.peer_id);
     }
 
     #[test]
     fn test_json_decode_of_AppendEntriesResponse_via_api() {
-        let jstr = ~"{\"success\":true,\"term\":777,\"idx\":99,\"commit_idx\":33}";
+        let jstr = ~"{\"success\":true,\"term\":777,\"idx\":99,\"commit_idx\":33,\"peer_id\":2}";
 
         let result = super::decode_append_entries_response(jstr);
         assert!(result.is_ok());
@@ -99,6 +102,7 @@ mod test {
         assert_eq!(777, aeresp.term);
         assert_eq!(99, aeresp.idx);
         assert_eq!(33, aeresp.commit_idx);
+        assert_eq!(2, aeresp.peer_id);
     }
 
 

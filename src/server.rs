@@ -28,12 +28,12 @@ use schooner::peer::Peer;
 use serror::{InvalidState,SError};
 
 pub mod schooner;
-pub mod serror;  // TODO: move to schooner dir
+pub mod serror;  // TODO: remove?
 
 // static DEFAULT_HEARTBEAT_INTERVAL: uint = 50;   // in millis
 // static DEFAULT_ELECTION_TIMEOUT  : uint = 150;  // in millis
 static STOP_MSG: &'static str = "STOP";   // '
-static UNKNOWN: u64     = 0u64;
+static UNKNOWN: u64     = 0u64;  // used for idx and term
 static UNKNOWN_LDR: int = -1;
 
 /* ---[ data structures ]--- */
@@ -237,14 +237,16 @@ impl Server {
                             AppendEntriesResponse{success: true,
                                                   term: self.log.term,
                                                   idx: self.log.idx,
-                                                  commit_idx: self.commit_idx}
+                                                  commit_idx: self.commit_idx,
+                                                  peer_id: self.id}
                         },
                         Err(e) => {
                             error!("server.follower_loop: ERROR {:?}", e);
                             AppendEntriesResponse{success: false,
                                                   term: self.log.term,
                                                   idx: self.log.idx,
-                                                  commit_idx: self.commit_idx}
+                                                  commit_idx: self.commit_idx,
+                                                  peer_id: self.id}
                         }
                     };
                     let jstr = json::Encoder::str_encode(&aeresp);
@@ -267,7 +269,7 @@ impl Server {
         //       or implement some simple ArrayHashMap like Clojure has
         // let mut peer_chans: HashMap<uint, (Sender<~str>, Receiver<IoResult<AppendEntriesResponse>>)> = HashMap::new();
         let mut peer_chans: HashMap<uint, Sender<~str>> = HashMap::new();
-        
+
         // spawn the peer handler tasks
         let (chsend_response, chrecv_response): (Sender<IoResult<AppendEntriesResponse>>, Receiver<IoResult<AppendEntriesResponse>>) = channel();
         for p in self.peers.iter() {
@@ -283,7 +285,8 @@ impl Server {
             });
         }
 
-        // now wait for network msgs (or timeout) // TODO: need to add timeout
+        // TODO: add HEARTBEATS!
+        // now wait for network msgs (or timeout)
         loop {
             println!("in leader loop for = {:?} :: waiting on self.p", self.id);
 
@@ -332,7 +335,7 @@ impl Server {
                         loop {
                             let mut timer = Timer::new().unwrap();
                             let timeout = timer.oneshot(500); // TODO: parameterize this time based on heartbeat timeout (should be 1/2?)
-                            
+
                             select! (
                                 ()   = timeout.recv() => println!("LDR: TIMEOUT => what do I do now???"),
                                 resp = chrecv_response.recv() => {
@@ -357,39 +360,7 @@ impl Server {
                                     }
                                 }
                             ); // end select block
-                                
-                            ////////////////// OLD //////////////
-                            
-                            // for p in self.peers.iter() {
-                            //     let response = chrecv_response.try_recv();
-                            //     if response.is_err() {
-                            //         info!("LDR: TryRecError: {:?}", response.unwrap_err());
-                            //         timer::sleep(15);  // BOGUS!!
-                            //         continue;
-                            //     }
-                            //     let response: IoResult<AppendEntriesResponse> = response.unwrap();
-                            //     info!("LDR: TryRec SUCCESS: ncommits: {} :: response = {:?}", commits, response);
-                            //     match response {
-                            //         Ok(aeresp) => {
-                            //             // Note: if get here it means an AEResponse was returned, but the
-                            //             // peer may have rejected the AERequest, so have to check the success flag
-                            //             // in the AEResponse
-                            //             // TODO: FILL IN
-                            //             if aeresp.success {
-                            //                 commits += 1;
-                            //                 if commits >= majority_cutoff {
-                            //                     self.commit_idx = self.log.idx;  // ???
-                            //                     ev.ch.send(~"200 OK");
-                            //                     break;
-                            //                 }
-                            //             } else {
-                            //                 // TODO: handle rejection scenario
-                            //                 info!("LDR: AEReq rejection: {:?}", aeresp);
-                            //             }
-                            //         },
-                            //         Err(e) => error!("LDR: Error returned from peer <{:?}>: {:?}", p.id, e)
-                            //     }
-                            // }
+
                             if commits >= majority_cutoff {
                                 info!("++++++ LDR: DEBUG 432")
                                 break;
@@ -398,7 +369,7 @@ impl Server {
                     }
                 }
             }
-        } // end loop
+        } // end main loop
 
         info!("LDR: leader_loop finishes with term: {}, log_idx: {}, commit_idx: {}, last_applied_commit: {}",
               self.log.term, self.log.idx, self.commit_idx, self.last_applied_commit);
@@ -1156,7 +1127,7 @@ mod test {
         let result2 = stream.read_to_str();
         drop(stream); // close the connection
 
-        send_shutdown_signal(svr_id);  // TODO: is there a better way to ensure a fn is called if an assert fails?
+        send_shutdown_signal(svr_id);
 
         assert!(result1.is_ok());
         assert!(result2.is_ok());
@@ -1167,7 +1138,7 @@ mod test {
 
     #[test]
     fn test_follower_with_single_AppendEntryRequest() {
-        setup();   // TODO: is there a better way to ensure a fn is called if an assert fails?
+        setup();
         write_cfg_file(1);
         let svr_id = 1;
         let start_result = start_server(svr_id, None);
@@ -1187,19 +1158,19 @@ mod test {
         let result1 = stream.read_to_str();
         drop(stream); // close the connection
 
-        send_shutdown_signal(svr_id);  // TODO: is there a better way to ensure a fn is called if an assert fails?
+        send_shutdown_signal(svr_id);
 
         /* ---[ validate results ]--- */
 
         assert!(result1.is_ok());
         let resp = result1.unwrap();
-        println!("{:?}", resp);
 
         assert!(resp.contains("\"success\":true"));
         let aeresp = append_entries::decode_append_entries_response(resp).unwrap();
         assert_eq!(1, aeresp.term);
         assert_eq!(1, aeresp.idx);
-        // TODO: need to test aeresp.commit_idx
+        assert_eq!(1, aeresp.peer_id);
+        assert_eq!(super::UNKNOWN, aeresp.commit_idx);  // since no ldr has established any commits is UNKNOWN
         assert_eq!(true, aeresp.success);
 
         // validate that response was written to disk
@@ -1251,7 +1222,7 @@ mod test {
         let result2 = stream.read_to_str();
         drop(stream); // close the connection
 
-        send_shutdown_signal(svr_id);  // TODO: is there a better way to ensure a fn is called if an assert fails?
+        send_shutdown_signal(svr_id);
 
         /* ---[ validate results ]--- */
 
@@ -1264,7 +1235,8 @@ mod test {
         let aeresp = append_entries::decode_append_entries_response(resp).unwrap();
         assert_eq!(1, aeresp.term);
         assert_eq!(1, aeresp.idx);
-        // TODO: need to test commit_idx
+        assert_eq!(1, aeresp.peer_id);
+        assert_eq!(super::UNKNOWN, aeresp.commit_idx);  // since no ldr has established any commits is UNKNOWN
         assert_eq!(true, aeresp.success);
 
 
@@ -1277,7 +1249,8 @@ mod test {
         let aeresp2 = append_entries::decode_append_entries_response(resp).unwrap();
         assert_eq!(1, aeresp2.term);
         assert_eq!(1, aeresp2.idx);
-        // TODO: need to test commit_idx
+        assert_eq!(1, aeresp.peer_id);
+        assert_eq!(super::UNKNOWN, aeresp.commit_idx);  // since no ldr has established any commits is UNKNOWN
         assert_eq!(true, aeresp2.success);
 
 
@@ -1323,7 +1296,7 @@ mod test {
         let result1 = stream.read_to_str();
         drop(stream); // close the connection   ==> NEED THIS? ask on #rust
 
-        send_shutdown_signal(svr_id);  // TODO: is there a better way to ensure a fn is called if an assert fails?
+        send_shutdown_signal(svr_id);
 
         /* ---[ validate ]--- */
         assert_eq!(4, logentries.len());
@@ -1333,13 +1306,13 @@ mod test {
 
         assert!(resp.contains("\"success\":true"));
         let aeresp = append_entries::decode_append_entries_response(resp).unwrap();
+        assert_eq!(true, aeresp.success);
         assert_eq!(1, aeresp.term);
         assert_eq!(4, aeresp.idx);
-        // TODO: need to test commit_idx
-        assert_eq!(true, aeresp.success);
+        assert_eq!(1, aeresp.peer_id);
+        assert_eq!(1, aeresp.commit_idx); // with send_aereqs, commit_idx == first idx of indexes passed in
     }
 
-    // TODO: test commit_idx as well
     #[test]
     fn test_follower_with_AppendEntryRequests_with_invalid_term() {
         setup();
@@ -1385,7 +1358,7 @@ mod test {
         let result3 = stream.read_to_str();
         drop(stream); // close the connection
 
-        send_shutdown_signal(svr_id);  // TODO: is there a better way to ensure a fn is called if an assert fails?
+        send_shutdown_signal(svr_id);
 
         /* ---[ validate ]--- */
 
@@ -1402,6 +1375,8 @@ mod test {
         assert_eq!(true, aeresp.success);
         assert_eq!(1, aeresp.term);
         assert_eq!(1, aeresp.idx);
+        assert_eq!(1, aeresp.peer_id);
+        assert_eq!(1, aeresp.commit_idx);  // with send_aereqs, commit_idx == first idx of indexes passed in
 
         // result 2
         assert!(result2.is_ok());
@@ -1412,6 +1387,8 @@ mod test {
         assert_eq!(true, aeresp.success);
         assert_eq!(2, aeresp.term);
         assert_eq!(3, aeresp.idx);
+        assert_eq!(1, aeresp.peer_id);
+        assert_eq!(2, aeresp.commit_idx);  // with send_aereqs, commit_idx == first idx of indexes passed in
 
         // result 3
         assert!(result3.is_ok());
@@ -1422,6 +1399,8 @@ mod test {
         assert_eq!(false, aeresp.success);
         assert_eq!(2, aeresp.term);
         assert_eq!(3, aeresp.idx);
+        assert_eq!(1, aeresp.peer_id);
+        assert_eq!(2, aeresp.commit_idx);  // this req failed, so is same commit_idx as prev
     }
 
     #[test]
@@ -1496,8 +1475,9 @@ mod test {
         let aeresp = append_entries::decode_append_entries_response(resp).unwrap();
         assert_eq!(true, aeresp.success);
         assert_eq!(1, aeresp.term);
-        // TODO: need to test commit_idx
         assert_eq!(2, aeresp.idx);
+        assert_eq!(1, aeresp.peer_id);
+        assert_eq!(1, aeresp.commit_idx); // with send_aereqs, commit_idx == first idx of indexes passed in
 
         // result 2
         assert!(result2.is_ok());
@@ -1508,6 +1488,8 @@ mod test {
         assert_eq!(false, aeresp.success);
         assert_eq!(1, aeresp.term);
         assert_eq!(1, aeresp.idx);
+        assert_eq!(1, aeresp.peer_id);
+        assert_eq!(1, aeresp.commit_idx); // req failed, so same as prev
 
         // result 3
         assert!(result3.is_ok());
@@ -1518,6 +1500,8 @@ mod test {
         assert_eq!(true, aeresp.success);
         assert_eq!(2, aeresp.term);
         assert_eq!(3, aeresp.idx);
+        assert_eq!(1, aeresp.peer_id);
+        assert_eq!(2, aeresp.commit_idx); // with send_aereqs, commit_idx == first idx of indexes passed in
     }
 
 
@@ -1543,7 +1527,7 @@ mod test {
         let commit_idx = super::UNKNOWN;  // first send out -> no consensus, so nothing committed
         let logentries1: Vec<LogEntry> = send_aereqs_with_commit_idx(&mut stream, indexes, terms, prev_log_idx, prev_log_term, commit_idx);
         let result1 = stream.read_to_str();
-        drop(stream); // close the connection
+        drop(stream);
 
         let num_entries_logged1 = num_entries_in_log();
 
@@ -1556,7 +1540,7 @@ mod test {
         let commit_idx = 2;  // idx two has committed on the leader's stateMachine
         let logentries2: Vec<LogEntry> = send_aereqs_with_commit_idx(&mut stream, indexes, terms, prev_log_idx, prev_log_term, commit_idx);
         let result2 = stream.read_to_str();
-        drop(stream); // close the connection
+        drop(stream);
 
         let num_entries_logged2 = num_entries_in_log();
 
@@ -1569,7 +1553,7 @@ mod test {
         let commit_idx = 2;  // only idx two has committed on the leader's stateMachine (no change)
         let logentries3: Vec<LogEntry> = send_aereqs_with_commit_idx(&mut stream, indexes, terms, prev_log_idx, prev_log_term, commit_idx);
         let result3 = stream.read_to_str();
-        drop(stream); // close the connection
+        drop(stream);
 
         let num_entries_logged3 = num_entries_in_log();
 
@@ -1599,7 +1583,7 @@ mod test {
 
         let num_entries_logged5 = num_entries_in_log();
 
-        send_shutdown_signal(svr_id);  // TODO: is there a better way to ensure a fn is called if an assert fails?
+        send_shutdown_signal(svr_id);
 
         /* ---[ validate ]--- */
 
@@ -1627,6 +1611,7 @@ mod test {
         assert_eq!(1, aeresp.term);
         assert_eq!(2, aeresp.idx);
         assert_eq!(super::UNKNOWN, aeresp.commit_idx);  // key test
+        assert_eq!(1, aeresp.peer_id);
 
         // result 2
         assert!(result2.is_ok());
