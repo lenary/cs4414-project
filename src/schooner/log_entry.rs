@@ -2,7 +2,7 @@ extern crate serialize;
 
 use serialize::{json, Decodable};
 
-#[deriving(Decodable, Encodable, Clone)]
+#[deriving(Decodable, Encodable, Clone, Show)]
 pub struct LogEntry {
     pub idx:  u64,  // raft idx in log
     pub term: u64,  // raft term in log

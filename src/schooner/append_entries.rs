@@ -5,7 +5,7 @@ use serialize::{json, Decodable};
 
 use schooner::log_entry::LogEntry;
 
-#[deriving(Decodable, Encodable, Clone)]
+#[deriving(Decodable, Encodable, Clone, Show)]
 pub struct AppendEntriesRequest {
     pub term: u64,          // current term of leader
     pub prev_log_idx: u64,  // last log idx in leader's log
@@ -19,7 +19,8 @@ pub struct AppendEntriesRequest {
 // how goraft creates it
 // return newAppendEntriesResponse(s.currentTerm, false, s.log.currentIndex(), s.log.CommitIndex()), false
 
-#[deriving(Decodable, Encodable, Clone)]
+// TODO: this needs to have the server id in it (just AEReq has the leader id)
+#[deriving(Decodable, Encodable, Clone, Show)]
 pub struct AppendEntriesResponse {
     // required by Raft protocol
     pub success: bool,   // whether follower has agreed to log entries in last AEReq

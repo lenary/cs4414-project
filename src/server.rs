@@ -12,7 +12,6 @@ use std::{cmp,str};
 use std::io::{Acceptor,BufferedReader,InvalidInput,IoError,IoResult,Listener,Timer};
 use std::io::net::ip::SocketAddr;
 use std::io::net::tcp::{TcpListener,TcpStream};
-use std::io::timer;
 use std::vec::Vec;
 
 use collections::hashmap::HashMap;
@@ -325,42 +324,74 @@ impl Server {
                             peer_chan.send(aereqstr.clone());
                         }
 
+                        // TODO: can we put the below loop in its own method ???
                         // TODO: need to set last_applied_commit at appropriate point ... not being set yet
                         // FIXME: this is totally the wrong way to do it -> just for initial testing ... need select with timeout
                         let majority_cutoff = self.peers.len() / 2;
                         let mut commits = 0;
                         loop {
-                            for p in self.peers.iter() {
-                                let response = chrecv_response.try_recv();
-                                if response.is_err() {
-                                    info!("LDR: TryRecError: {:?}", response.unwrap_err());
-                                    timer::sleep(15);  // BOGUS!!
-                                    continue;
-                                }
-                                let response: IoResult<AppendEntriesResponse> = response.unwrap();
-                                info!("LDR: TryRec SUCCESS: ncommits: {} :: response = {:?}", commits, response);
-                                match response {
-                                    Ok(aeresp) => {
-                                        // Note: if get here it means an AEResponse was returned, but the
-                                        // peer may have rejected the AERequest, so have to check the success flag
-                                        // in the AEResponse
-                                        // TODO: FILL IN
-                                        if aeresp.success {
-                                            commits += 1;
-                                            if commits >= majority_cutoff {
-                                                self.commit_idx = self.log.idx;  // ???
-                                                ev.ch.send(~"200 OK");
-                                                break;
+                            let mut timer = Timer::new().unwrap();
+                            let timeout = timer.oneshot(500); // TODO: parameterize this time based on heartbeat timeout (should be 1/2?)
+                            
+                            select! (
+                                ()   = timeout.recv() => println!("LDR: TIMEOUT => what do I do now???"),
+                                resp = chrecv_response.recv() => {
+                                    println!("the answer was: {}", resp);  // BOGUS
+                                    match resp {
+                                        Err(e) => error!("LDR: Error returned from peer <?>: {:?}", e), // TODO: get peer id from AEResp once added
+                                        Ok(aeresp) => {
+                                            // if get here an AEResponse was returned, but the peer may have
+                                            // rejected the AERequest, so check the success flag in the AEResponse
+                                            if aeresp.success {
+                                                commits += 1;
+                                                if commits >= majority_cutoff {
+                                                    self.commit_idx = self.log.idx;  // ??? I think this is right - double check
+                                                    ev.ch.send(~"200 OK");
+                                                    break;  // TODO: does this break out of the loop or just the select
+                                                }
+                                            } else {
+                                                // TODO: handle rejection scenario
+                                                info!("LDR: AEReq rejection: {:?}", aeresp);
                                             }
-                                        } else {
-                                            // TODO: handle rejection scenario
-                                            info!("LDR: AEReq rejection: {:?}", aeresp);
                                         }
-                                    },
-                                    Err(e) => error!("LDR: Error returned from peer <{:?}>: {:?}", p.id, e)
+                                    }
                                 }
-                            }
+                            ); // end select block
+                                
+                            ////////////////// OLD //////////////
+                            
+                            // for p in self.peers.iter() {
+                            //     let response = chrecv_response.try_recv();
+                            //     if response.is_err() {
+                            //         info!("LDR: TryRecError: {:?}", response.unwrap_err());
+                            //         timer::sleep(15);  // BOGUS!!
+                            //         continue;
+                            //     }
+                            //     let response: IoResult<AppendEntriesResponse> = response.unwrap();
+                            //     info!("LDR: TryRec SUCCESS: ncommits: {} :: response = {:?}", commits, response);
+                            //     match response {
+                            //         Ok(aeresp) => {
+                            //             // Note: if get here it means an AEResponse was returned, but the
+                            //             // peer may have rejected the AERequest, so have to check the success flag
+                            //             // in the AEResponse
+                            //             // TODO: FILL IN
+                            //             if aeresp.success {
+                            //                 commits += 1;
+                            //                 if commits >= majority_cutoff {
+                            //                     self.commit_idx = self.log.idx;  // ???
+                            //                     ev.ch.send(~"200 OK");
+                            //                     break;
+                            //                 }
+                            //             } else {
+                            //                 // TODO: handle rejection scenario
+                            //                 info!("LDR: AEReq rejection: {:?}", aeresp);
+                            //             }
+                            //         },
+                            //         Err(e) => error!("LDR: Error returned from peer <{:?}>: {:?}", p.id, e)
+                            //     }
+                            // }
                             if commits >= majority_cutoff {
+                                info!("++++++ LDR: DEBUG 432")
                                 break;
                             }
                         }
