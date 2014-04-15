@@ -283,8 +283,9 @@ impl Server {
             let peer = p.clone();
             let chsend_aeresp = chsend_response.clone();
             chsend_aereq.send( Some(first_heartbeat_msg.clone()) ); // put on queue for first heartbeat msg
+            let hbeat_interval = self.heartbeat_interval;
             spawn(proc() {
-                Server::leader_peer_handler(peer, chrecv_aereq, chsend_aeresp);
+                Server::leader_peer_handler(peer, hbeat_interval, chrecv_aereq, chsend_aeresp);
             });
             peer_chans.insert(p.id, chsend_aereq);
         }
@@ -332,18 +333,20 @@ impl Server {
                         // TODO: need to set last_applied_commit at appropriate point ... not being set yet
                         let majority_cutoff = self.peers.len() / 2;
                         let mut commits = 0;
+                        let mut timer = Timer::new().unwrap();
                         loop {
-                            let mut timer = Timer::new().unwrap();
-                            let timeout = timer.oneshot(self.heartbeat_interval); // TODO: parameterize this
+                            // in this case the timer is for avoiding infinite waits on chrecv_response
+                            let timeout = timer.oneshot(self.heartbeat_interval);
 
-                            // TODO: remove this!!!
                             select! (
-                                ()   = timeout.recv() => {
-                                    info!("LDR: TIMEOUT while waiting for responses from peer handlers ... should sent heartbeat msg");
-                                    // self.send_heartbeat_msg()
+                                () = timeout.recv() => {
+                                    info!("LDR: TIMEOUT while waiting for responses from peer handlers");
+                                    ev.ch.send(~"500 Server Error: unable to log command on leader");
+                                    break;
                                 },
                                 resp = chrecv_response.recv() => {
-                                    println!("the answer was: {}", resp);  // BOGUS
+                                    // TODO: it is possible that the response pulled off will be for a different (previous)
+                                    //       client cmd => need to detect and account for this!
                                     match resp {
                                         Err(e) => error!("LDR: Error returned from peer <?>: {:?}", e), // TODO: get peer id from AEResp once added
                                         Ok(aeresp) => {
@@ -377,6 +380,11 @@ impl Server {
             }
         } // end main loop
 
+        // TODO: should this be set like this?
+        if self.state != Stopped {
+            self.state = Follower;
+        }
+
         info!("LDR: leader_loop finishes with term: {}, log_idx: {}, commit_idx: {}, last_applied_commit: {}",
               self.log.term, self.log.idx, self.commit_idx, self.last_applied_commit);
     }
@@ -391,61 +399,87 @@ impl Server {
     /// - chsend: Sender channel for this handler to message back to leader_loop with the
     ///           response from the peer
     ///
-    fn leader_peer_handler(peer: Peer, chrecv: Receiver<Option<AppendEntriesRequest>>,
+    fn leader_peer_handler(peer: Peer, heartbeat_interval: u64,
+                           chrecv: Receiver<Option<AppendEntriesRequest>>,
                            chsend: Sender<IoResult<AppendEntriesResponse>>) {
         println!("LEADER PEER_HANDLER for peer {:?}", peer.id);
 
         let mut last_aereq: Option<AppendEntriesRequest> = None;
+        let mut timer = Timer::new().unwrap();
+        let ipaddr = format!("{}:{:u}", &peer.ip, peer.tcpport);
+        let addr = from_str::<SocketAddr>(ipaddr).unwrap();
 
         // TODO: need to set up heartbeat timer here ... annd select! over the two Receivers
 
         loop {
-            let aereq = chrecv.recv();
-            if aereq.is_none() {
-                println!("RECEIVED STOP MESSAGE for peer hdlr {:?}", peer.id);
-                break;
-            } else {
-                last_aereq = aereq;
-                // is client cmd
-                println!("RECEIVED CLIENT CMD {:?} for peer hdlr: {:?}", last_aereq, peer.id);
-                // connect to peer
-                // FIXME: this unwrap may be unsafe -> do we know that the formats will always be right when we get here?
-                let ipaddr = format!("{}:{:u}", &peer.ip, peer.tcpport);
-                let addr = from_str::<SocketAddr>(ipaddr).unwrap();
-                info!("PHDLR: DEBUG 887: connecting to: {}", ipaddr);
+            let timeout = timer.oneshot(heartbeat_interval);
 
-                let aereqstr = json::Encoder::str_encode(&last_aereq);
-                let mut stream = TcpStream::connect(addr);
-                // have to add the Length to the network message
-                let result = stream.write_str(format!("Length: {:u}\n{:s}", aereqstr.len(), aereqstr));
+            select! (
+                () = timeout.recv() => {
+                    info!("PEER HANDLER: TIMEOUT while waiting for responses from peer handlers ... should sent heartbeat msg");
+                    let mut hrtbeat_req = last_aereq.clone().unwrap();
+                    hrtbeat_req.entries = Vec::new();
+                    let aereqstr = json::Encoder::str_encode(&hrtbeat_req);
+                    let mut stream = TcpStream::connect(addr.clone());
+                    // have to add the Length to the network message
+                    let result = stream.write_str(format!("Length: {:u}\n{:s}", aereqstr.len(), aereqstr));
 
-                println!("PHDLR DEBUG 888 for peer: {}", peer.id);
-                if result.is_err() {
-                    println!("PHDLR for peer {} == WARN: Unable to send message to peer {}", peer.id, peer);
-                    continue;
+                    info!("PEER HANDLER: sending heartbeat to: {}", peer.id);
+                    if result.is_err() {
+                        error!("PEER HANDLER for peer {}: WARN: Unable to send heartbeat to peer {}", peer.id, peer);
+                        continue;
+                    }
+                    let _ = stream.flush();
+                    // TODO: should we read response? ignore it? maybe the follower shouldn't send a response to a heartbeat?
+                    let _ = stream.read_to_str(); // this type of read is only safe if the other end closes the stream (EOF)
+                    drop(stream);
+                },
+                aereq = chrecv.recv() => {
+                    if aereq.is_none() {
+                        println!("RECEIVED STOP MESSAGE for peer hdlr {:?}", peer.id);
+                        break;
+                    } else {
+                        last_aereq = aereq;
+                        // is client cmd
+                        println!("RECEIVED CLIENT CMD {:?} for peer hdlr: {:?}", last_aereq, peer.id);
+                        // connect to peer
+                        // FIXME: this unwrap may be unsafe -> do we know that the formats will always be right when we get here?
+                        info!("PHDLR: DEBUG 887: connecting to: {}", ipaddr.clone());
+
+                        let aereqstr = json::Encoder::str_encode(&last_aereq);
+                        let mut stream = TcpStream::connect(addr.clone());
+                        // have to add the Length to the network message
+                        let result = stream.write_str(format!("Length: {:u}\n{:s}", aereqstr.len(), aereqstr));
+
+                        println!("PHDLR DEBUG 888 for peer: {}", peer.id);
+                        if result.is_err() {
+                            println!("PHDLR for peer {} == WARN: Unable to send message to peer {}", peer.id, peer);
+                            continue;
+                        }
+                        let _ = stream.flush();
+                        println!("PHDLR DEBUG 890 for peer: {}", peer.id);
+                        // FIXME: this is a blocking call => how avoid an eternal wait?
+
+                        // fn read(&mut self, buf: &mut [u8]) -> IoResult<uint>
+                        // let mut buf: Vec<u8> = Vec::from_elem(1, 0u8);
+                        // let response = stream.read(buf.as_mut_slice());
+                        // TODO: currently responses do not have a length in the message => probably should?
+                        let response = stream.read_to_str(); // this type of read is only safe if the other end closes the stream (EOF)
+                        println!(">>===> PEER HDLR {} ==> PEER RESPONSE: {}", peer.id, response);
+
+                        match response {
+                            Ok(aeresp_str) => {
+                                let aeresp = append_entries::decode_append_entries_response(aeresp_str).
+                                    ok().expect(format!("leader_peer_handler: decode aeresp failed for: {:?}", aeresp_str));
+                                chsend.send(Ok(aeresp));
+                            },
+                            Err(e) => chsend.send(Err(e))
+                        }
+
+                        drop(stream);  // TODO: probably unneccesary since goes out of scope
+                    }
                 }
-                let _ = stream.flush();
-                println!("PHDLR DEBUG 890 for peer: {}", peer.id);
-                // FIXME: this is a blocking call => how avoid an eternal wait?
-
-                // fn read(&mut self, buf: &mut [u8]) -> IoResult<uint>
-                // let mut buf: Vec<u8> = Vec::from_elem(1, 0u8);
-                // let response = stream.read(buf.as_mut_slice());
-                // TODO: currently responses do not have a length in the message => probably should?
-                let response = stream.read_to_str(); // this type of read is only safe if the other end closes the stream (EOF)
-                println!(">>===> PEER HDLR {} ==> PEER RESPONSE: {}", peer.id, response);
-
-                match response {
-                    Ok(aeresp_str) => {
-                        let aeresp = append_entries::decode_append_entries_response(aeresp_str).
-                            ok().expect(format!("leader_peer_handler: decode aeresp failed for: {:?}", aeresp_str));
-                        chsend.send(Ok(aeresp));
-                    },
-                    Err(e) => chsend.send(Err(e))
-                }
-
-                drop(stream);  // TODO: probably unneccesary since goes out of scope
-            }
+            );
         }
         println!("PEER HANDLER FOR {:?} SHUTTING DOWN", peer.id);
     }
@@ -601,7 +635,6 @@ fn read_network_msg(stream: TcpStream, svr_id: uint) -> IoResult<~str> {
     let length = result.unwrap();
     info!("** CL: {:u} for svr {}", length, svr_id);
 
-    // TODO: is this the right way to do this?
     let mut buf: Vec<u8> = Vec::from_elem(length, 0u8);
     let nread = try!(reader.read(buf.as_mut_slice()));
 
@@ -1029,9 +1062,9 @@ mod test {
 
 
     // one follower experiences "network partition" phase, but since 2/3 of cluster still
-    // up the commits should happen
+    // up the commits should still happen
     // FIXME: this one is not working yet => won't work until we get heartbeats working
-    // #[test]
+    #[test]
     fn test_leader_with_2_followers_with_one_active_first_then_second_joins_later() {
         setup();
         write_cfg_file(3);
@@ -1041,7 +1074,7 @@ mod test {
         if start_result1.is_err() {
             fail!("{:?}", start_result1);
         }
-        timer::sleep(50); // wait a short while for the leader to get set up and ready to msg followers
+        timer::sleep(25); // wait a short while for the leader to get set up and ready to msg followers
 
         // start follower, svr 2
         let start_result2 = start_server(2, None);
@@ -1049,6 +1082,13 @@ mod test {
             send_shutdown_signal(1);
             fail!("resul2.is_err: {:?}", start_result2);
         }
+
+        // let start_result3 = start_server(3, None);
+        // if start_result3.is_err() {
+        //     send_shutdown_signal(1);
+        //     send_shutdown_signal(2);
+        //     fail!("resul2.is_err: {:?}", start_result3);
+        // }
 
         // DO NOT start follower svr 3 at first - simulate network partition
         timer::sleep(150); // wait a short while for all servers to get set up
@@ -1070,6 +1110,11 @@ mod test {
         drop(stream); // close the connection
 
         info!("%%%>>>============ during network partition: result1: {:?}", result1);
+
+        spawn(proc() {
+            send_shutdown_signal(1);
+        });
+        send_shutdown_signal(2);
     }
 
     // this one does not test the leader with any other Peers
