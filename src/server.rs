@@ -271,24 +271,24 @@ impl Server {
 
         // TODO: change this to a Vec<(peer.id, chsend)> and just search linearly through it => no need for full hashmap
         //       or implement some simple ArrayHashMap like Clojure has
-        let mut peer_chans: HashMap<uint, Sender<~str>> = HashMap::new();
+        let mut peer_chans: HashMap<uint, Sender<Option<AppendEntriesRequest>>> = HashMap::new();
 
         // spawn the peer handler tasks
         let (chsend_response, chrecv_response): (Sender<IoResult<AppendEntriesResponse>>, Receiver<IoResult<AppendEntriesResponse>>) = channel();
+        let first_heartbeat_msg = self.make_aereq(Vec::new());
         for p in self.peers.iter() {
-            let (chsend_aereq, chrecv_aereq) : (Sender<~str>, Receiver<~str>) = channel();
-            peer_chans.insert(p.id, chsend_aereq);
+            let (chsend_aereq, chrecv_aereq) : (Sender<Option<AppendEntriesRequest>>, Receiver<Option<AppendEntriesRequest>>) = channel();
 
             // TODO: need to launch a separate task to handle each IO interaction with the followers
             let peer = p.clone();
             let chsend_aeresp = chsend_response.clone();
+            chsend_aereq.send( Some(first_heartbeat_msg.clone()) ); // put on queue for first heartbeat msg
             spawn(proc() {
-                // TODO: put in logic to peer_handler that if no messages from papa after some timeout, to shutdown
                 Server::leader_peer_handler(peer, chrecv_aereq, chsend_aeresp);
             });
+            peer_chans.insert(p.id, chsend_aereq);
         }
 
-        // TODO: add HEARTBEATS!
         // now wait for network msgs (or timeout)
         loop {
             println!("in leader loop for = {:?} :: waiting on self.p", self.id);
@@ -300,9 +300,8 @@ impl Server {
             if is_stop_msg(ev.msg) {
                 println!("LDR: DEBUG 200");
                 self.state = Stopped;
-                for p in self.peers.iter() {
-                    let peer_chan: &Sender<~str> = peer_chans.get(&p.id);
-                    peer_chan.send(~"STOP");
+                for peer_chan in peer_chans.values() {
+                    peer_chan.send(None); // STOP message to peer_handlers
                 }
                 break;
 
@@ -312,7 +311,6 @@ impl Server {
                     None            => ev.ch.send(~"400 Bad Request"),
                     Some(clientMsg) => {
                         let aereq = self.make_aereq(vec!(clientMsg));
-                        let aereqstr = json::Encoder::str_encode(&aereq);
 
                         // first log it to own leader log
                         match self.log.append_entries(&aereq) {
@@ -326,9 +324,8 @@ impl Server {
                         };
 
                         // send this message to the peer-handlers
-                        for p in self.peers.iter() {
-                            let peer_chan: &Sender<~str> = peer_chans.get(&p.id);
-                            peer_chan.send(aereqstr.clone());
+                        for peer_chan in peer_chans.values() {
+                            peer_chan.send(Some(aereq.clone()));
                         }
 
                         // TODO: can we put the below loop in its own method ???
@@ -339,6 +336,7 @@ impl Server {
                             let mut timer = Timer::new().unwrap();
                             let timeout = timer.oneshot(self.heartbeat_interval); // TODO: parameterize this
 
+                            // TODO: remove this!!!
                             select! (
                                 ()   = timeout.recv() => {
                                     info!("LDR: TIMEOUT while waiting for responses from peer handlers ... should sent heartbeat msg");
@@ -393,26 +391,33 @@ impl Server {
     /// - chsend: Sender channel for this handler to message back to leader_loop with the
     ///           response from the peer
     ///
-    fn leader_peer_handler(peer: Peer, chrecv: Receiver<~str>, chsend: Sender<IoResult<AppendEntriesResponse>>) {
+    fn leader_peer_handler(peer: Peer, chrecv: Receiver<Option<AppendEntriesRequest>>,
+                           chsend: Sender<IoResult<AppendEntriesResponse>>) {
         println!("LEADER PEER_HANDLER for peer {:?}", peer.id);
 
+        let mut last_aereq: Option<AppendEntriesRequest> = None;
+
+        // TODO: need to set up heartbeat timer here ... annd select! over the two Receivers
+
         loop {
-            let msg = chrecv.recv();
-            if msg == ~"STOP" {
+            let aereq = chrecv.recv();
+            if aereq.is_none() {
                 println!("RECEIVED STOP MESSAGE for peer hdlr {:?}", peer.id);
                 break;
             } else {
+                last_aereq = aereq;
                 // is client cmd
-                println!("RECEIVED CLIENT CMD {:?} for peer hdlr: {:?}", msg, peer.id);
+                println!("RECEIVED CLIENT CMD {:?} for peer hdlr: {:?}", last_aereq, peer.id);
                 // connect to peer
                 // FIXME: this unwrap may be unsafe -> do we know that the formats will always be right when we get here?
                 let ipaddr = format!("{}:{:u}", &peer.ip, peer.tcpport);
                 let addr = from_str::<SocketAddr>(ipaddr).unwrap();
                 info!("PHDLR: DEBUG 887: connecting to: {}", ipaddr);
 
+                let aereqstr = json::Encoder::str_encode(&last_aereq);
                 let mut stream = TcpStream::connect(addr);
                 // have to add the Length to the network message
-                let result = stream.write_str(format!("Length: {:u}\n{:s}", msg.len(), msg));
+                let result = stream.write_str(format!("Length: {:u}\n{:s}", aereqstr.len(), aereqstr));
 
                 println!("PHDLR DEBUG 888 for peer: {}", peer.id);
                 if result.is_err() {
@@ -933,7 +938,7 @@ mod test {
     }
 
     /* ---[ tests ]--- */
-    //#[test]
+    #[test]
     fn test_leader_with_2_followers_both_active() {
         setup();
         write_cfg_file(3);
@@ -1066,7 +1071,6 @@ mod test {
 
         info!("%%%>>>============ during network partition: result1: {:?}", result1);
     }
-
 
     // this one does not test the leader with any other Peers
     // it works right now since there is no majority committed logic
