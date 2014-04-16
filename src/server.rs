@@ -416,7 +416,7 @@ impl Server {
 
             select! (
                 () = timeout.recv() => {
-                    info!("PEER HANDLER: TIMEOUT while waiting for responses from peer handlers ... should sent heartbeat msg");
+                    info!("PEER HANDLER: TIMEOUT sending heartbeat msg");
                     let mut hrtbeat_req = last_aereq.clone().unwrap();
                     hrtbeat_req.entries = Vec::new();
                     let aereqstr = json::Encoder::str_encode(&hrtbeat_req);
@@ -779,6 +779,20 @@ mod test {
         }
     }
 
+    fn read_datalog(pathstr: &str) -> IoResult<Vec<~str>> {
+        let logpath = Path::new(pathstr);
+        let file = try!(File::open(&logpath));
+        let mut br = BufferedReader::new(file);
+        let mut entries: Vec<~str> = Vec::with_capacity(10);
+        for line in br.lines() {
+            match line {
+                Ok(ln) => entries.push(ln.trim().to_owned()),
+                Err(e) => return Err(e)
+            }
+        }
+        Ok(entries)
+    }
+
     fn create_server(id: uint) -> IoResult<~Server> {
         let dirpath = Path::new(TEST_DIR);
         let logpath = match id {
@@ -971,7 +985,7 @@ mod test {
     }
 
     /* ---[ tests ]--- */
-    #[test]
+    //#[test]
     fn test_leader_with_2_followers_both_active() {
         setup();
         write_cfg_file(3);
@@ -1060,37 +1074,43 @@ mod test {
         assert_eq!(~"200 OK", result3.unwrap());
     }
 
+    // this one won't work until we build in the "catch-up"/repair mechanism for a
+    // leader to resend messages to an out of date follower
+    //#[test]
+    fn test_leader_with_2_followers_with_one_active_first_then_second_joins_later() {
+        // FILL IN
+    }
+
 
     // one follower experiences "network partition" phase, but since 2/3 of cluster still
     // up the commits should still happen
-    // FIXME: this one is not working yet => won't work until we get heartbeats working
     #[test]
-    fn test_leader_with_2_followers_with_one_active_first_then_second_joins_later() {
+    fn test_leader_with_2_followers_initially_then_lose_1() {
         setup();
         write_cfg_file(3);
 
         // start leader
         let start_result1 = start_server(1, Some(CfgOptions{init_state: Leader}));
         if start_result1.is_err() {
-            fail!("{:?}", start_result1);
+            fail!("start_result1.is_err: {:?}", start_result1);
         }
-        timer::sleep(25); // wait a short while for the leader to get set up and ready to msg followers
+        timer::sleep(20); // wait a short while for the leader to get set up and ready to msg followers
 
         // start follower, svr 2
         let start_result2 = start_server(2, None);
         if start_result2.is_err() {
             send_shutdown_signal(1);
-            fail!("resul2.is_err: {:?}", start_result2);
+            fail!("start_result2.is_err: {:?}", start_result2);
         }
 
-        // let start_result3 = start_server(3, None);
-        // if start_result3.is_err() {
-        //     send_shutdown_signal(1);
-        //     send_shutdown_signal(2);
-        //     fail!("resul2.is_err: {:?}", start_result3);
-        // }
+        // start follower, svr 3
+        let start_result3 = start_server(3, None);
+        if start_result3.is_err() {
+            send_shutdown_signal(1);
+            send_shutdown_signal(2);
+            fail!("send_result3.is_err: {:?}", start_result3);
+        }
 
-        // DO NOT start follower svr 3 at first - simulate network partition
         timer::sleep(150); // wait a short while for all servers to get set up
 
         let ldr_addr = start_result1.unwrap();
@@ -1102,19 +1122,119 @@ mod test {
         if send_result1.is_err() {
             send_shutdown_signal(1);
             send_shutdown_signal(2);
-            send_shutdown_signal(3);
-            fail!(send_result1);
+            fail!("send_result1.is_err: {:?}", send_result1);
         }
 
         let result1 = stream.read_to_str();
         drop(stream); // close the connection
 
-        info!("%%%>>>============ during network partition: result1: {:?}", result1);
+        // long pause to ensure hearbeats are maintaining leader position
+        timer::sleep(200);
+        
+        // Client msg #2
+        let mut stream = TcpStream::connect(ldr_addr);
+        let send_result2 = send_client_cmd(&mut stream, ~"PUT x=2");
+        if send_result2.is_err() {
+            send_shutdown_signal(1);
+            send_shutdown_signal(2);
+            fail!("send_result2.is_err: {:?}", send_result2);
+        }
+
+        let result2 = stream.read_to_str();
+        drop(stream); // close the connection
+
+        // brief pause to ensure time to write to disk
+        timer::sleep(25);
+
+        // read state of datalogs at t1
+        let t1s1_datalog_res = read_datalog(S1TEST_PATH);
+        let t1s2_datalog_res = read_datalog(S2TEST_PATH);
+        let t1s3_datalog_res = read_datalog(S3TEST_PATH);  // no file for this
+
+        // now shutdown server 3 -> simulate network partition
+        send_shutdown_signal(3);
+
+        // Client msg #3 and #4 nearly simultaneously
+        let mut stream3 = TcpStream::connect(ldr_addr);
+        let mut stream4 = TcpStream::connect(ldr_addr);
+
+        let send_result3 = send_client_cmd(&mut stream3, ~"PUT x=3");
+
+        if send_result3.is_err() {
+            send_shutdown_signal(1);
+            send_shutdown_signal(2);
+            fail!("send_result3.is_err: {:?}", send_result3);
+        }
+
+        let send_result4 = send_client_cmd(&mut stream4, ~"PUT x=4");
+        if send_result4.is_err() {
+            send_shutdown_signal(1);
+            send_shutdown_signal(2);
+            fail!("send_result4.is_err: {:?}", send_result4);
+        }
+
+        // brief pause to ensure time to distribute messages and write to disk
+        timer::sleep(25);
 
         spawn(proc() {
             send_shutdown_signal(1);
         });
         send_shutdown_signal(2);
+
+        // read state of datalogs at t2
+        let t2s1_datalog_res = read_datalog(S1TEST_PATH);
+        let t2s2_datalog_res = read_datalog(S2TEST_PATH);
+        let t2s3_datalog_res = read_datalog(S3TEST_PATH);  // no file for this
+
+
+        /* ---[ validate results ]--- */
+
+        assert!(result1.is_ok());
+        assert_eq!(~"200 OK", result1.unwrap());
+
+        assert!(result2.is_ok());
+        assert_eq!(~"200 OK", result2.unwrap());
+
+        // t1: should be two entries in the svr1 and svr2 datalogs and none in svr3
+        assert!(t1s1_datalog_res.is_ok());
+        assert!(t1s2_datalog_res.is_ok());
+        assert!(t1s3_datalog_res.is_ok());  // should be no file with that name
+
+        let t1s1_datalog = t1s1_datalog_res.unwrap();
+        let t1s2_datalog = t1s2_datalog_res.unwrap();
+        let t1s3_datalog = t1s3_datalog_res.unwrap();
+
+        assert_eq!(2, t1s1_datalog.len());
+        assert_eq!(2, t1s2_datalog.len());
+        assert_eq!(2, t1s3_datalog.len());
+
+        assert!(t1s1_datalog.get(0).contains("PUT x=1"));
+        assert_eq!(t1s1_datalog.get(0), t1s2_datalog.get(0));
+        assert_eq!(t1s1_datalog.get(0), t1s3_datalog.get(0));
+
+        assert!(t1s2_datalog.get(1).contains("PUT x=2"));
+        assert_eq!(t1s1_datalog.get(1), t1s2_datalog.get(1));
+        assert_eq!(t1s1_datalog.get(1), t1s3_datalog.get(1));
+
+
+        // t2: should be two entries in all logs
+        assert!(t2s1_datalog_res.is_ok());
+        assert!(t2s2_datalog_res.is_ok());
+        assert!(t2s3_datalog_res.is_ok());  // should be file now
+
+        let t2s1_datalog = t2s1_datalog_res.unwrap();
+        let t2s2_datalog = t2s2_datalog_res.unwrap();
+        let t2s3_datalog = t2s3_datalog_res.unwrap();
+
+        assert_eq!(4, t2s1_datalog.len());
+        assert_eq!(4, t2s2_datalog.len());
+        assert_eq!(2, t2s3_datalog.len());
+
+        assert!(t2s1_datalog.get(2).contains("PUT x=3"));
+        assert_eq!(t2s1_datalog.get(2), t2s2_datalog.get(2));
+
+        assert!(t2s1_datalog.get(3).contains("PUT x=4"));
+        assert_eq!(t2s1_datalog.get(3), t2s2_datalog.get(3));
     }
 
     // this one does not test the leader with any other Peers
@@ -1168,7 +1288,7 @@ mod test {
         // assert_eq!(~"200 OK", result2.unwrap());  // BOGUS tmp response
     }
 
-    #[test]
+    //#[test]
     fn test_follower_to_send_client_redirect_when_leader_is_unknown() {
         setup();
         write_cfg_file(3);
@@ -1199,7 +1319,7 @@ mod test {
         assert!( !resp.contains("Redirect: 127.0.0.1:23158") );
     }
 
-    #[test]
+    //#[test]
     fn test_follower_to_send_client_redirect_when_leader_is_known() {
         setup();
         write_cfg_file(3);
@@ -1239,7 +1359,7 @@ mod test {
         assert!(resp.contains(format!("Redirect: 127.0.0.1:{}", S1TEST_PORT)));
     }
 
-    #[test]
+    //#[test]
     fn test_follower_with_single_AppendEntryRequest() {
         setup();
         write_cfg_file(1);
@@ -1294,7 +1414,7 @@ mod test {
         assert!(readres.is_err());
     }
 
-    #[test]
+    //#[test]
     fn test_follower_with_same_AppendEntryRequest_twice_should_return_false_2nd_time() {
         setup();
         write_cfg_file(1);
@@ -1375,7 +1495,7 @@ mod test {
         assert!(readres.is_err());
     }
 
-    #[test]
+    //#[test]
     fn test_follower_with_multiple_valid_AppendEntryRequests() {
         setup();
         write_cfg_file(1);
@@ -1416,7 +1536,7 @@ mod test {
         assert_eq!(1, aeresp.commit_idx); // with send_aereqs, commit_idx == first idx of indexes passed in
     }
 
-    #[test]
+    //#[test]
     fn test_follower_with_AppendEntryRequests_with_invalid_term() {
         setup();
         write_cfg_file(1);
@@ -1506,7 +1626,7 @@ mod test {
         assert_eq!(2, aeresp.commit_idx);  // this req failed, so is same commit_idx as prev
     }
 
-    #[test]
+    //#[test]
     fn test_follower_with_AppendEntryRequests_with_invalid_prevLogTerm() {
         setup();
         write_cfg_file(1);
@@ -1608,7 +1728,7 @@ mod test {
     }
 
 
-    #[test]
+    //#[test]
     fn test_follower_with_AppendEntryRequests_with_changing_commit_idx() {
         setup();
         write_cfg_file(1);

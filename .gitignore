@@ -3,3 +3,4 @@ log_entry
 server
 *lib
 server.test.config
+test.out
