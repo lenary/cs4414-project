@@ -443,7 +443,6 @@ impl Server {
                         // is client cmd
                         println!("RECEIVED CLIENT CMD {:?} for peer hdlr: {:?}", last_aereq, peer.id);
                         // connect to peer
-                        // FIXME: this unwrap may be unsafe -> do we know that the formats will always be right when we get here?
                         info!("PHDLR: DEBUG 887: connecting to: {}", ipaddr.clone());
 
                         let aereqstr = json::Encoder::str_encode(&last_aereq);
@@ -941,6 +940,19 @@ mod test {
         Ok(())
     }
 
+    // Params:
+    //  num_to_send: number of commands to send
+    //  first_num: first num in the PUT=x cmd
+    fn send_client_cmds(num_to_send: uint, first_num: uint, ldr_socket_addr: SocketAddr) -> IoResult<()> {
+        for i in range(first_num, first_num + num_to_send) {
+            let mut stream = TcpStream::connect(ldr_socket_addr);
+            try!(send_client_cmd(&mut stream, format!("PUT x={}", i)));
+            let result = stream.read_to_str();
+            drop(stream); // close the connection
+        }
+        Ok(())
+    }
+    
     // meant for sending a single AERequest
     fn send_aereq1(stream: &mut IoResult<TcpStream>) -> LogEntry {
         /* ---[ prepare and send request ]--- */
@@ -985,7 +997,7 @@ mod test {
     }
 
     /* ---[ tests ]--- */
-    //#[test]
+    #[test]
     fn test_leader_with_2_followers_both_active() {
         setup();
         write_cfg_file(3);
@@ -1076,15 +1088,161 @@ mod test {
 
     // this one won't work until we build in the "catch-up"/repair mechanism for a
     // leader to resend messages to an out of date follower
-    //#[test]
+    #[test]
     fn test_leader_with_2_followers_with_one_active_first_then_second_joins_later() {
         // FILL IN
     }
 
 
+    #[test]
+    fn test_leader_with_4_followers_being_hit_by_multiple_clients_simultaneously() {
+        setup();
+        write_cfg_file(5);
+        
+        // start leader
+        let start_result1 = start_server(1, Some(CfgOptions{init_state: Leader}));
+        if start_result1.is_err() {
+            fail!("start_result1.is_err: {:?}", start_result1);
+        }
+        timer::sleep(20); // wait a short while for the leader to get set up and ready to msg followers
+
+        // start follower, svr 2
+        let start_result2 = start_server(2, None);
+        if start_result2.is_err() {
+            send_shutdown_signal(1);
+            fail!("start_result2.is_err: {:?}", start_result2);
+        }
+
+        // start follower, svr 3
+        let start_result3 = start_server(3, None);
+        if start_result3.is_err() {
+            send_shutdown_signal(1);
+            send_shutdown_signal(2);
+            fail!("send_result3.is_err: {:?}", start_result3);
+        }
+
+        // start follower, svr 4
+        let start_result4 = start_server(4, None);
+        if start_result4.is_err() {
+            send_shutdown_signal(1);
+            send_shutdown_signal(2);
+            send_shutdown_signal(3);
+            fail!("send_result4.is_err: {:?}", start_result4);
+        }
+
+        // start follower, svr 5
+        let start_result5 = start_server(5, None);
+        if start_result5.is_err() {
+            send_shutdown_signal(1);
+            send_shutdown_signal(2);
+            send_shutdown_signal(3);
+            send_shutdown_signal(4);
+            fail!("send_result5.is_err: {:?}", start_result5);
+        }
+
+        timer::sleep(150); // wait a short while for all servers to get set up
+
+        let ldr_addr = start_result1.unwrap();
+        let ldr_addr1 = ldr_addr.clone();
+        
+        let (chsend1, chrecv1): (Sender<IoResult<()>>, Receiver<IoResult<()>>) = channel();
+        let (chsend2, chrecv2): (Sender<IoResult<()>>, Receiver<IoResult<()>>) = channel();
+        let (chsend3, chrecv3): (Sender<IoResult<()>>, Receiver<IoResult<()>>) = channel();
+        let (chsend4, chrecv4): (Sender<IoResult<()>>, Receiver<IoResult<()>>) = channel();
+        let (chsend5, chrecv5): (Sender<IoResult<()>>, Receiver<IoResult<()>>) = channel();
+
+        spawn(proc() {
+            timer::sleep(5);
+            let result = send_client_cmds(3, 1, ldr_addr1);
+            chsend1.send(result);
+        });
+
+        spawn(proc() {
+            timer::sleep(5);
+            let result = send_client_cmds(3, 4, ldr_addr1);
+            chsend2.send(result);
+        });
+
+        spawn(proc() {
+            timer::sleep(5);
+            let result = send_client_cmds(3, 7, ldr_addr1);
+            chsend3.send(result);
+        });
+
+        spawn(proc() {
+            timer::sleep(5);
+            let result = send_client_cmds(3, 10, ldr_addr1);
+            chsend4.send(result);
+        });
+
+        spawn(proc() {
+            timer::sleep(5);
+            let result = send_client_cmds(3, 13, ldr_addr1);
+            chsend5.send(result);
+        });
+
+        let clt1_result = chrecv1.recv();
+        let clt2_result = chrecv2.recv();
+        let clt3_result = chrecv3.recv();
+        let clt4_result = chrecv4.recv();
+        let clt5_result = chrecv5.recv();
+
+        timer::sleep(300); // wait a short while for all messages to get handled
+
+        spawn(proc() {
+            send_shutdown_signal(1);
+        });
+        spawn(proc() {
+            send_shutdown_signal(2);
+        });
+        spawn(proc() {
+            send_shutdown_signal(3);
+        });
+        spawn(proc() {
+            send_shutdown_signal(4);
+        });
+        send_shutdown_signal(5);
+
+        assert!(clt1_result.is_ok());
+        assert!(clt2_result.is_ok());
+        assert!(clt3_result.is_ok());
+        assert!(clt4_result.is_ok());
+        assert!(clt5_result.is_ok());
+
+        let s1_datalog_res = read_datalog(S1TEST_PATH);
+        let s2_datalog_res = read_datalog(S2TEST_PATH);
+        let s3_datalog_res = read_datalog(S3TEST_PATH);
+        let s4_datalog_res = read_datalog(S4TEST_PATH);
+        let s5_datalog_res = read_datalog(S5TEST_PATH);
+
+        assert!(s1_datalog_res.is_ok());
+        assert!(s2_datalog_res.is_ok());
+        assert!(s3_datalog_res.is_ok());
+        assert!(s4_datalog_res.is_ok());
+        assert!(s5_datalog_res.is_ok());
+
+        let s1_datalog = s1_datalog_res.unwrap();
+        let s2_datalog = s2_datalog_res.unwrap();
+        let s3_datalog = s3_datalog_res.unwrap();
+        let s4_datalog = s4_datalog_res.unwrap();
+        let s5_datalog = s5_datalog_res.unwrap();
+
+        assert_eq!(15, s1_datalog.len());
+        assert_eq!(15, s2_datalog.len());
+        assert_eq!(15, s3_datalog.len());
+        assert_eq!(15, s4_datalog.len());
+        assert_eq!(15, s5_datalog.len());
+
+        assert_eq!(s1_datalog, s5_datalog);
+        for i in range(0, s1_datalog.len()) {
+            assert_eq!(s1_datalog.get(i), s3_datalog.get(i));
+            assert_eq!(s1_datalog.get(i), s4_datalog.get(i));
+        }
+    }
+    
     // one follower experiences "network partition" phase, but since 2/3 of cluster still
     // up the commits should still happen
-    #[test]
+    // #[test]
     fn test_leader_with_2_followers_initially_then_lose_1() {
         setup();
         write_cfg_file(3);
@@ -1288,7 +1446,7 @@ mod test {
         // assert_eq!(~"200 OK", result2.unwrap());  // BOGUS tmp response
     }
 
-    //#[test]
+    #[test]
     fn test_follower_to_send_client_redirect_when_leader_is_unknown() {
         setup();
         write_cfg_file(3);
@@ -1319,7 +1477,7 @@ mod test {
         assert!( !resp.contains("Redirect: 127.0.0.1:23158") );
     }
 
-    //#[test]
+    #[test]
     fn test_follower_to_send_client_redirect_when_leader_is_known() {
         setup();
         write_cfg_file(3);
@@ -1359,7 +1517,7 @@ mod test {
         assert!(resp.contains(format!("Redirect: 127.0.0.1:{}", S1TEST_PORT)));
     }
 
-    //#[test]
+    #[test]
     fn test_follower_with_single_AppendEntryRequest() {
         setup();
         write_cfg_file(1);
@@ -1414,7 +1572,7 @@ mod test {
         assert!(readres.is_err());
     }
 
-    //#[test]
+    #[test]
     fn test_follower_with_same_AppendEntryRequest_twice_should_return_false_2nd_time() {
         setup();
         write_cfg_file(1);
@@ -1495,7 +1653,7 @@ mod test {
         assert!(readres.is_err());
     }
 
-    //#[test]
+    #[test]
     fn test_follower_with_multiple_valid_AppendEntryRequests() {
         setup();
         write_cfg_file(1);
@@ -1536,7 +1694,7 @@ mod test {
         assert_eq!(1, aeresp.commit_idx); // with send_aereqs, commit_idx == first idx of indexes passed in
     }
 
-    //#[test]
+    #[test]
     fn test_follower_with_AppendEntryRequests_with_invalid_term() {
         setup();
         write_cfg_file(1);
@@ -1626,7 +1784,7 @@ mod test {
         assert_eq!(2, aeresp.commit_idx);  // this req failed, so is same commit_idx as prev
     }
 
-    //#[test]
+    #[test]
     fn test_follower_with_AppendEntryRequests_with_invalid_prevLogTerm() {
         setup();
         write_cfg_file(1);
@@ -1728,7 +1886,7 @@ mod test {
     }
 
 
-    //#[test]
+    #[test]
     fn test_follower_with_AppendEntryRequests_with_changing_commit_idx() {
         setup();
         write_cfg_file(1);
