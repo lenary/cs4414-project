@@ -70,18 +70,22 @@ pub struct Server {
 
     heartbeat_interval: u64,
     election_timeout: u64,
-    // more later?
+    // TOOD: more later?
 }
 
+///
+/// Events are used to pass incoming network messages from the network_listener
+/// task to the server_loop task
+///
 // TODO: does this need to be enhanced?
 pub struct Event {
-    msg: ~str,
-    // target: ??,
+    msg: ~str,         // incoming message from network (Peer svr or client)
+    ch: Sender<~str>,  // for server_loop task to message back to network_listener task
+    // target: ??,     // TODO: these are from go-raft: needed?
     // return_val: ??,
-    ch: Sender<~str>,  // TODO: document what this is for
 }
 
-// TODO: may get rid of this once elections are set up
+// TODO: may get rid of this once elections are set up - or still needed for testing?
 // for providing special setup options to a server
 pub struct CfgOptions {
     init_state: State,
@@ -89,7 +93,7 @@ pub struct CfgOptions {
 }
 
 ///
-/// struct to hold the two parts of a (string-based) client message
+/// struct to hold the two parts of a (non-HTTP) client message
 ///
 #[deriving(Clone, Show)]
 struct ClientMsg {
@@ -100,6 +104,14 @@ struct ClientMsg {
 /* ---[ Server impl ]--- */
 
 impl Server {
+    ///
+    /// Initialize a new server.  This constructor does NOT start the server
+    /// or spawn any tasks.  Call Server#run to do that.
+    /// Params:
+    /// - id: id of server - must match an id in the config file
+    /// - cfgpath: path to config file listing all the servers in the cluster
+    /// - logpath: path to the event log for this server (and uniq to this server)
+    ///
     pub fn new(id: uint, cfgpath: Path, logpath: Path) -> IoResult<~Server> {
 
         let (ch, pt): (Sender<~Event>, Receiver<~Event>) = channel();
@@ -122,7 +134,7 @@ impl Server {
         let s = ~Server {
             id: myid,
             ip: myip,
-            tcpport: mytcpport,  // TODO: could we use udp instead? are we doing our own ACKs at the app protocol level?
+            tcpport: mytcpport,  // TODO: could we use UDP instead? are we doing our own ACKs at the app protocol level?
             state: Stopped,
             log: lg,
             commit_idx: UNKNOWN,  // commit_idx 0 = UNKNOWN
@@ -140,10 +152,11 @@ impl Server {
 
 
     ///
-    /// Central method that sets things up and then runs the server threads/tasks
+    /// Central method that runs the server threads/tasks
     /// Two tasks/threads are in operation:
-    /// - a network-listener task is spawned and
+    /// - a network-listener task is spawned as a new task and
     /// - the current task goes into the server_loop until a STOP signal is received
+    ///   thus, this method does not return until the server shuts down
     ///
     /// TODO: return val should probably be changed to IoResult<()> ...
     pub fn run(&mut self, opt: Option<CfgOptions>) -> Result<(), SError> {
@@ -174,7 +187,7 @@ impl Server {
     }
 
     fn serve_loop(&mut self) {
-        println!("Now serving => loop until Stopped");
+        debug!("Now serving => loop until Stopped");
         loop {
             match self.state {
                 Follower     => self.follower_loop(),
@@ -193,7 +206,7 @@ impl Server {
         let mut timer = Timer::new().unwrap();
 
         loop {
-            println!("FLW: DEBUG 0");
+            debug!("FLW: DEBUG 0");
             let timeout = timer.oneshot(1000); // use for detecting lost leader  // TODO: adjust this time
 
             // select over timeout channel and network_listener port (receiver)
@@ -208,7 +221,7 @@ impl Server {
 
             if ret == timeout.id() {
                 timeout.recv();
-                println!("FWL: TIMEOUT!! => change state to Candidate");
+                info!("FWL: TIMEOUT!! => change state to Candidate");
                 self.state = Candidate;
                 break;
 
@@ -216,12 +229,12 @@ impl Server {
                 let ev = pt.recv();
                 info!("follower: event message: {}", ev.msg);
                 if is_stop_msg(ev.msg) {
-                    println!("FLW: DEBUG 2");
+                    debug!("FLW: DEBUG 2");
                     self.state = Stopped;
                     break;
 
                 } else if is_cmd_from_client(ev.msg) {  // redirect to leader
-                    info!("redirecting client to leader");
+                    info!("redirecting client to leader from follower {}", self.id);
                     ev.ch.send( self.redirect_msg() );
 
                 } else {
@@ -256,13 +269,13 @@ impl Server {
                     let jstr = json::Encoder::str_encode(&aeresp);
                     ev.ch.send(jstr);
                 }
-                println!("FLW: DEBUG 3");
+                debug!("FLW: DEBUG 3");
             }
         }
     }
 
     fn candidate_loop(&mut self) {
-        println!("candidate loop");
+        info!("candidate loop");
         self.state = Leader;
     }
 
@@ -279,7 +292,7 @@ impl Server {
         for p in self.peers.iter() {
             let (chsend_aereq, chrecv_aereq) : (Sender<Option<AppendEntriesRequest>>, Receiver<Option<AppendEntriesRequest>>) = channel();
 
-            // TODO: need to launch a separate task to handle each IO interaction with the followers
+            // launch a separate task to handle each IO interaction with the followers
             let peer = p.clone();
             let chsend_aeresp = chsend_response.clone();
             chsend_aereq.send( Some(first_heartbeat_msg.clone()) ); // put on queue for first heartbeat msg
@@ -292,22 +305,20 @@ impl Server {
 
         // now wait for network msgs (or timeout)
         loop {
-            println!("in leader loop for = {:?} :: waiting on self.p", self.id);
+            info!("in leader loop for = {} :: waiting on self.p", self.id);
 
-            // TODO: this design won't work => will hang if no client activity and miss sending heartbeat
-            //       this needs its own select or should be conbined with the select down below
             let ev = self.p.recv();
             debug!("follower: event message: {}", ev.msg);
             if is_stop_msg(ev.msg) {
-                println!("LDR: DEBUG 200");
+                debug!("LDR: DEBUG 200");
                 self.state = Stopped;
                 for peer_chan in peer_chans.values() {
-                    peer_chan.send(None); // STOP message to peer_handlers
+                    peer_chan.send(None); // None == STOP message to peer_handlers
                 }
                 break;
 
             } else if is_cmd_from_client(ev.msg) {
-                println!("LDR: DEBUG 201: msg from client: {:?}", ev.msg);
+                info!("LDR: INFO 201: msg from client: {:?}", ev.msg);
                 match create_client_msg(&ev.msg) {
                     None            => ev.ch.send(~"400 Bad Request"),
                     Some(clientMsg) => {
@@ -357,7 +368,7 @@ impl Server {
                                                 if commits >= majority_cutoff {
                                                     self.commit_idx = self.log.idx;  // ??? I think this is right - double check
                                                     ev.ch.send(~"200 OK");
-                                                    break;  // TODO: does this break out of the loop or just the select
+                                                    break;
                                                 }
                                             } else {
                                                 // TODO: handle rejection scenario
@@ -369,7 +380,7 @@ impl Server {
                             ); // end select block
 
                             if commits >= majority_cutoff {
-                                info!("++++++ LDR: DEBUG 432")
+                                debug!("++++++ LDR: DEBUG 432: have enough commits for majority")
                                 break;
                             }
                         }
@@ -389,8 +400,7 @@ impl Server {
               self.log.term, self.log.idx, self.commit_idx, self.last_applied_commit);
     }
 
-    // TODO: this could return a Future and send Future<bool> to indicate closing down
-    // TODO: this may need to go into its own file => major piece of code coming up
+    // TODO: this may need to go into its own file
     ///
     /// Runs in its own task and handles all leader->follower messaging to the specified Peer
     /// Params:
@@ -402,14 +412,12 @@ impl Server {
     fn leader_peer_handler(peer: Peer, heartbeat_interval: u64,
                            chrecv: Receiver<Option<AppendEntriesRequest>>,
                            chsend: Sender<IoResult<AppendEntriesResponse>>) {
-        println!("LEADER PEER_HANDLER for peer {:?}", peer.id);
+        info!("LEADER PEER_HANDLER for peer {:?}", peer.id);
 
         let mut last_aereq: Option<AppendEntriesRequest> = None;
         let mut timer = Timer::new().unwrap();
         let ipaddr = format!("{}:{:u}", &peer.ip, peer.tcpport);
         let addr = from_str::<SocketAddr>(ipaddr).unwrap();
-
-        // TODO: need to set up heartbeat timer here ... annd select! over the two Receivers
 
         loop {
             let timeout = timer.oneshot(heartbeat_interval);
@@ -436,12 +444,12 @@ impl Server {
                 },
                 aereq = chrecv.recv() => {
                     if aereq.is_none() {
-                        println!("RECEIVED STOP MESSAGE for peer hdlr {:?}", peer.id);
+                        info!("RECEIVED STOP MESSAGE for peer hdlr {:?}", peer.id);
                         break;
                     } else {
                         last_aereq = aereq;
                         // is client cmd
-                        println!("RECEIVED CLIENT CMD {:?} for peer hdlr: {:?}", last_aereq, peer.id);
+                        info!("RECEIVED CLIENT CMD {:?} for peer hdlr: {:?}", last_aereq, peer.id);
                         // connect to peer
                         info!("PHDLR: DEBUG 887: connecting to: {}", ipaddr.clone());
 
@@ -450,13 +458,13 @@ impl Server {
                         // have to add the Length to the network message
                         let result = stream.write_str(format!("Length: {:u}\n{:s}", aereqstr.len(), aereqstr));
 
-                        println!("PHDLR DEBUG 888 for peer: {}", peer.id);
+                        debug!("PHDLR DEBUG 888 for peer: {}", peer.id);
                         if result.is_err() {
-                            println!("PHDLR for peer {} == WARN: Unable to send message to peer {}", peer.id, peer);
+                            info!("PHDLR for peer {} ==> WARN: Unable to send message to peer {}", peer.id, peer);
                             continue;
                         }
                         let _ = stream.flush();
-                        println!("PHDLR DEBUG 890 for peer: {}", peer.id);
+                        debug!("PHDLR DEBUG 890 for peer: {}", peer.id);
                         // FIXME: this is a blocking call => how avoid an eternal wait?
 
                         // fn read(&mut self, buf: &mut [u8]) -> IoResult<uint>
@@ -464,7 +472,7 @@ impl Server {
                         // let response = stream.read(buf.as_mut_slice());
                         // TODO: currently responses do not have a length in the message => probably should?
                         let response = stream.read_to_str(); // this type of read is only safe if the other end closes the stream (EOF)
-                        println!(">>===> PEER HDLR {} ==> PEER RESPONSE: {}", peer.id, response);
+                        info!(">>===> PEER HDLR {} ==> PEER RESPONSE: {}", peer.id, response);
 
                         match response {
                             Ok(aeresp_str) => {
@@ -480,13 +488,13 @@ impl Server {
                 }
             );
         }
-        println!("PEER HANDLER FOR {:?} SHUTTING DOWN", peer.id);
+        info!("PEER HANDLER FOR {:?} SHUTTING DOWN", peer.id);
     }
 
 
     // TODO: what the hell is this state?  Got it from goraft => is it needed?
     fn snapshotting_loop(&mut self) {
-        println!("snapshotting loop");
+        info!("snapshotting loop");
         self.state = Follower;
     }
 
@@ -632,7 +640,7 @@ fn read_network_msg(stream: TcpStream, svr_id: uint) -> IoResult<~str> {
                            detail: Some(format!("length line parsed: {:s}", length_hdr))});
     }
     let length = result.unwrap();
-    info!("** CL: {:u} for svr {}", length, svr_id);
+    debug!("** read_network_msg: length of msg {:u} at svr {}", length, svr_id);
 
     let mut buf: Vec<u8> = Vec::from_elem(length, 0u8);
     let nread = try!(reader.read(buf.as_mut_slice()));
@@ -656,21 +664,24 @@ fn read_network_msg(stream: TcpStream, svr_id: uint) -> IoResult<~str> {
 /// When a network msg comes in, an Event is created with the string contents of the "message"
 /// and a Sender channel is put on the Event (why??) and the event is sent.
 /// The serve_loop will read from that channel and process the Event.
-/// Events can be any incoming information, such as STOP messages, AEReqs, AEResponses or client commands (???) => not yet implemented
-/// chan: Event channel in the Server struct.
+/// Events can be any incoming information, such as STOP messages, AEReqs, AEResponses
+/// or client commands
+/// Param:
+///  - conx_str: info to create SocketAddr for listening on
+///  - chan: Event channel in the Server struct.
 ///
 fn network_listener(conx_str: ~str, chan: Sender<~Event>, svr_id: uint) {
     let addr = from_str::<SocketAddr>(conx_str).expect("Address error.");
     let mut acceptor = TcpListener::bind(addr).unwrap().listen();
-    println!("server <{}> listening on {:}", svr_id, addr);
+    info!("server <{}> listening on {:}", svr_id, addr);
 
     // TODO: document what this channel is for
     let (chsend, chrecv): (Sender<~str>, Receiver<~str>) = channel();
     let mut stop_signalled = false;
 
-    println!("NL: DEBUG 00: svr: {}", svr_id);
+    debug!("NL: DEBUG 00: svr: {}", svr_id);
     for stream in acceptor.incoming() {
-        println!("NL: DEBUG 0: svr: {}", svr_id);
+        debug!("NL: DEBUG 0: svr: {}", svr_id);
 
         let mut stream = stream.unwrap();
 
@@ -682,35 +693,34 @@ fn network_listener(conx_str: ~str, chan: Sender<~Event>, svr_id: uint) {
 
                 if is_stop_msg(input) {
                     stop_signalled = true;  // TODO: do I need to set this bool var or can I just break out here?
-                    println!("NL: DEBUG 1: was stop msg for svr: {}", svr_id);
+                    info!("NL: INFO 1: stop msg received at svr: {}", svr_id);
 
                 } else {
-                    println!("NL: sent Event to event-loop; now waiting on response for svr: {}", svr_id);
+                    info!("NL: sent Event to event-loop; now waiting on response for svr: {}", svr_id);
 
                     // Once the Event is sent to serve-loop task it awaits a response (string)
                     // and the response will be send back to the network caller.
                     // Since the response is just a string, all logic of what is in the request
                     // & response is handled by the serve-loop
                     let resp = chrecv.recv();
-                    println!("NL: sending response: {:?}", resp);
+                    info!("NL: sending response: {:?}", resp);
                     let result = stream.write_str(resp);
                     if result.is_err() {
                         error!("ERROR: Unable to respond to sender over network: {:?} for svr: {}", result.err(), svr_id);
                     }
                     let _ = stream.flush();
                 }
-                println!("NL: DEBUG 2 for svr {}", svr_id);
+                debug!("NL: DEBUG 2 for svr {}", svr_id);
             },
             Err(ioerr) => error!("ERROR: {:?}", ioerr)
         }
         if stop_signalled {
-            println!("NL: DEBUG 4 for svr {}", svr_id);
+            debug!("NL: DEBUG 4 for svr {}", svr_id);
             break;
         }
     }
 
-    // TODO: change this to debug!
-    println!("network listener shutting down ... for svr {}", svr_id);
+    debug!("network listener shutting down ... for svr {}", svr_id);
 }
 
 
@@ -718,7 +728,7 @@ fn is_stop_msg(s: &str) -> bool {
     s == STOP_MSG
 }
 
-// TODO: need to implement this
+// TODO: need to implement this => what command line args/switches to require/allow?
 fn main() {
 }
 
@@ -828,7 +838,7 @@ mod test {
                     ch.send(Ok(socket_addr));
                     match server.run(opt) {
                         Ok(_) => (),
-                        Err(e) => println!("launch_cluster: ERROR: {:?}", e)
+                        Err(e) => error!("launch_cluster: ERROR: {:?}", e)
                     }
                 },
                 Err(e) => ch.send(Err(e))
@@ -914,7 +924,7 @@ mod test {
 
         let result = stream.write_str(req_msg);
         if result.is_err() {
-            println!("Client ERROR: {:?}", result.err());
+            error!("Client ERROR: {:?}", result.err());
         }
         let _ = stream.flush();
 
@@ -952,7 +962,7 @@ mod test {
         }
         Ok(())
     }
-    
+
     // meant for sending a single AERequest
     fn send_aereq1(stream: &mut IoResult<TcpStream>) -> LogEntry {
         /* ---[ prepare and send request ]--- */
@@ -979,7 +989,7 @@ mod test {
         ////
         let result = stream.write_str(req_msg);
         if result.is_err() {
-            println!("Client ERROR: {:?}", result.err());
+            error!("Client ERROR: {:?}", result.err());
         }
         let _ = stream.flush();
         logentry1
@@ -1098,7 +1108,7 @@ mod test {
     fn test_leader_with_4_followers_being_hit_by_multiple_clients_simultaneously() {
         setup();
         write_cfg_file(5);
-        
+
         // start leader
         let start_result1 = start_server(1, Some(CfgOptions{init_state: Leader}));
         if start_result1.is_err() {
@@ -1144,7 +1154,7 @@ mod test {
 
         let ldr_addr = start_result1.unwrap();
         let ldr_addr1 = ldr_addr.clone();
-        
+
         let (chsend1, chrecv1): (Sender<IoResult<()>>, Receiver<IoResult<()>>) = channel();
         let (chsend2, chrecv2): (Sender<IoResult<()>>, Receiver<IoResult<()>>) = channel();
         let (chsend3, chrecv3): (Sender<IoResult<()>>, Receiver<IoResult<()>>) = channel();
@@ -1239,7 +1249,7 @@ mod test {
             assert_eq!(s1_datalog.get(i), s4_datalog.get(i));
         }
     }
-    
+
     // one follower experiences "network partition" phase, but since 2/3 of cluster still
     // up the commits should still happen
     // #[test]
@@ -1288,7 +1298,7 @@ mod test {
 
         // long pause to ensure hearbeats are maintaining leader position
         timer::sleep(200);
-        
+
         // Client msg #2
         let mut stream = TcpStream::connect(ldr_addr);
         let send_result2 = send_client_cmd(&mut stream, ~"PUT x=2");

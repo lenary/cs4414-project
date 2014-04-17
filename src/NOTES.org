@@ -1,3 +1,49 @@
+# 16-Apr
+* Things left TODO:
+* TODO Log repair or "catch up"
+* TODO Leader elections
+** TODO Once the basics are in, there are many edge cases, such neutralizing old leaders
+* TODO Better network protocol?
+** TODO go-raft uses a Transport interface (which I think it only uses HTTP) -> should we have such as thing?
+* TODO Addition of new peers: dynamic configuration changes
+** Requires a two-phase protocol
+* TODO Refactor some of the large methods to more composed functions (may require properly using Rust lifetime notation)
+* TODO Should some of the functionality be moved into the peer impl??
+* TODO While client requests are sent with a UUID, the "exactly-once semantics" are not enforced by the server (leader)
+** the idx_term_hist field in Log needs to be updated to retain UUID?  Other ideas?
+
+Using the 6 areas of the Ousterhout presentation
+
+1. Leader election
+** Status: not done, no design thought out; heartbeats are in place (as part of normal operation), so lack of heartbeats as trigger for candidate state is ready
+** Priority: High
+
+2. Normal Operation
+** Status: significant progress, some edge cases not handled
+** Priority: High
+
+3. Safety and consistency after leader changes
+** Status: many safety features added as part of normal operation, but log repair or "catch up" not implemented yet
+** Priority: High
+
+4. Neutralize old leaders
+** Status: not done, not started
+** Priority: Medium
+
+5. Client protocol
+** Status: significant progress, but missing features, such as:
+*** HTTP interface (medium priority)
+*** exactly-once semantics (high priority)
+** Priority: High
+
+6. Dynamic Configuration Changes (requires a two-phase protocol)
+** Status: not done; configuration file format defined for one-time initialization
+** Priority: Low
+
+* Done to a first approximation
+** Client requests
+*** 
+
 # 13-Apr
 * QUESTION Should followers send AEResp after a heartbeat AEReq ??
 ** Maybe yes, but then the peer handlers should send the response to the leader_loop ?
