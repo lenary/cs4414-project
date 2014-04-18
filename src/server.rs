@@ -207,7 +207,7 @@ impl Server {
 
         loop {
             debug!("FLW: DEBUG 0");
-            let timeout = timer.oneshot(self.election_timeout); // use for detecting lost leader
+            let timeout = timer.oneshot(1000); // use for detecting lost leader
 
             // select over timeout channel and network_listener port (receiver)
             // Note: cannot use the select! macro here bcs it won't compile with channels in a struct
