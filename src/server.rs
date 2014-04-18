@@ -32,7 +32,7 @@ pub mod serror;  // TODO: remove?
 
 static DEFAULT_HEARTBEAT_INTERVAL: u64 = 50;   // in millis
 static DEFAULT_ELECTION_TIMEOUT  : u64 = 150;  // in millis
-static STOP_MSG: &'static str = "STOP";   // '
+static STOP_MSG: &'static str = "STOP";
 static UNKNOWN: u64     = 0u64;  // used for idx and term
 static UNKNOWN_LDR: int = -1;
 
@@ -207,9 +207,12 @@ impl Server {
 
         loop {
             debug!("FLW: DEBUG 0");
-            let timeout = timer.oneshot(1000); // use for detecting lost leader  // TODO: adjust this time
+            let timeout = timer.oneshot(self.election_timeout); // use for detecting lost leader
 
             // select over timeout channel and network_listener port (receiver)
+            // Note: cannot use the select! macro here bcs it won't compile with channels in a struct
+            //       https://github.com/mozilla/rust/issues/12902
+            // so we have to manually code what the macro provides
             let sel = Select::new();
             let mut pt = sel.handle(&self.p);
             let mut timeout = sel.handle(&timeout);
@@ -240,7 +243,7 @@ impl Server {
                 } else {
                     let result = append_entries::decode_append_entries_request(ev.msg);
                     if result.is_err() {
-                        fail!("ERROR: Unable to decode msg into append_entry_request: {:?}.\nError is: {:?}", ev.msg, result.err());
+                        fail!("ERROR: Unable to decode msg into append_entry_request: {}.\nError is: {:?}", ev.msg, result.err());
                     }
                     let aereq = result.unwrap();
                     self.leader = get_leader_ptr(&aereq, &self.peers); // update leader based on each AEReq
@@ -287,7 +290,8 @@ impl Server {
         let mut peer_chans: HashMap<uint, Sender<Option<AppendEntriesRequest>>> = HashMap::new();
 
         // spawn the peer handler tasks
-        let (chsend_response, chrecv_response): (Sender<IoResult<AppendEntriesResponse>>, Receiver<IoResult<AppendEntriesResponse>>) = channel();
+        let (chsend_response, chrecv_response): (Sender<IoResult<AppendEntriesResponse>>,
+                                                 Receiver<IoResult<AppendEntriesResponse>>) = channel();
         let first_heartbeat_msg = self.make_aereq(Vec::new());
         for p in self.peers.iter() {
             let (chsend_aereq, chrecv_aereq) : (Sender<Option<AppendEntriesRequest>>, Receiver<Option<AppendEntriesRequest>>) = channel();
@@ -758,15 +762,15 @@ mod test {
     use schooner::append_entries::AppendEntriesRequest;
     use schooner::log_entry::LogEntry;
 
-    static TEST_CFG      : &'static str = "server.test.config";  // '
-    static TEST_DIR      : &'static str = "datalog";             // '
-    static S1TEST_PATH   : &'static str = "datalog/S1TEST";      // '
-    static S2TEST_PATH   : &'static str = "datalog/S2TEST";      // '
-    static S3TEST_PATH   : &'static str = "datalog/S3TEST";      // '
-    static S4TEST_PATH   : &'static str = "datalog/S4TEST";      // '
-    static S5TEST_PATH   : &'static str = "datalog/S5TEST";      // '
+    static TEST_CFG      : &'static str = "server.test.config";
+    static TEST_DIR      : &'static str = "datalog";
+    static S1TEST_PATH   : &'static str = "datalog/S1TEST";
+    static S2TEST_PATH   : &'static str = "datalog/S2TEST";
+    static S3TEST_PATH   : &'static str = "datalog/S3TEST";
+    static S4TEST_PATH   : &'static str = "datalog/S4TEST";
+    static S5TEST_PATH   : &'static str = "datalog/S5TEST";
 
-    static TEST_IPADDR   : &'static str = "127.0.0.1";           // '
+    static TEST_IPADDR   : &'static str = "127.0.0.1";
     static S1TEST_PORT   : uint         = 23158;
     // static S2TEST_PORT   : uint         = 23159;
     // static S3TEST_PORT   : uint         = 23160;
