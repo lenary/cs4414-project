@@ -8,8 +8,8 @@ use schooner::log_entry::LogEntry;
 #[deriving(Decodable, Encodable, Clone, Show)]
 pub struct AppendEntriesRequest {
     pub term: u64,          // current term of leader
-    pub prev_log_idx: u64,  // last log idx in leader's log
-    pub prev_log_term: u64, // last log term in leader's log
+    pub prev_log_idx: u64,  // idx of leader's log entry immediately before first entry in this AER
+    pub prev_log_term: u64, // term of leader's log entry immediately before first entry in this AER
     pub commit_idx: u64,    // last idx of log committed to leader's state machine
     pub leader_id: uint,    // id for leader (based on config file)
     pub entries: Vec<LogEntry>, // entries to log; may be empty (hearbeat msg)

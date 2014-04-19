@@ -328,7 +328,7 @@ impl Server {
 
             if ret == aeresp_recvr.id() {
                 let resp = aeresp_recvr.recv();
-                self.process_aeresponse_from_peer(resp);
+                self.ldr_process_aeresponse_from_peer(resp);
 
             } else {
                 let ev = nl_recvr.recv();
@@ -363,7 +363,11 @@ impl Server {
               self.log.term, self.log.idx, self.commit_idx, self.last_applied_commit);
     }
 
-    fn process_aeresponse_from_peer(&mut self, resp: IoResult<AppendEntriesResponse>) -> Option<AppendEntriesResponse> {
+    ///
+    /// TODO: DOCUMENT ME
+    /// Returns Some(AppendEntriesResponse) if the IoResult was not an error, otherwise returns None
+    /// 
+    fn ldr_process_aeresponse_from_peer(&mut self, resp: IoResult<AppendEntriesResponse>) -> Option<AppendEntriesResponse> {
         match resp {
             Ok(aeresp) => {
                 let peer_idx = get_peer_idx(&self.peers, aeresp.peer_id);

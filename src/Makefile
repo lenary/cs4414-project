@@ -1,5 +1,7 @@
+all: server
+
 clean:
-	rm -f *lib server log log_entry append_entries_request serror
+	rm -f server
 
 server:
 	rustc server.rs
