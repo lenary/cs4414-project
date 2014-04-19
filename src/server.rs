@@ -346,69 +346,8 @@ impl Server {
                     // TODO: implement me!
 
                 } else if is_cmd_from_client(ev.msg) {
-                    info!("LDR: INFO 201: msg from client: {:?}", ev.msg);
-                    match create_client_msg(&ev.msg) {
-                        None            => ev.ch.send(~"400 Bad Request"),
-                        Some(clientMsg) => {
-                            let aereq = self.make_aereq(vec!(clientMsg));
+                    self.ldr_process_cmd_from_client(&ev, &peer_chans, &chrecv_response);
 
-                            // first send this message to the peer-handlers
-                            // without logging to own log
-                            for peer_chan in peer_chans.values() {
-                                peer_chan.send(Some(aereq.clone()));
-                            }
-
-                            // TODO: can we put the below loop in its own method ???
-                            // TODO: need to set last_applied_commit at appropriate point ... not being set yet
-                            let majority_cutoff = self.peers.len() / 2;
-                            let mut commits = 0;
-                            let mut timer = Timer::new().unwrap();
-                            // in this case the timer is for avoiding infinite waits on chrecv_response
-                            // setting one timeout for the whole interaction with peers, not per interaction
-                            let timeout = timer.oneshot(self.heartbeat_interval * 3); // FIXME: semi-arbitrary duration - what would be better?
-                            loop {
-                                select! (
-                                    () = timeout.recv() => {
-                                        info!("LDR: TIMEOUT while waiting for responses from peer handlers");
-                                        ev.ch.send(~"500 Server Error: unable to log command on leader");
-                                        break;
-                                    },
-                                    resp = chrecv_response.recv() => {
-                                        // TODO: it is possible that the response pulled off will be for a different (previous)
-                                        //       client cmd => need to detect and account for this!
-                                        match resp {
-                                            Err(e) => error!("LDR: Error returned from peer <?>: {:?}", e),
-                                            Ok(aeresp) => {
-                                                let peer_idx = get_peer_idx(&self.peers, aeresp.peer_id);
-                                                assert!(peer_idx != -1);
-                                                // if get here an AEResponse was returned, but the peer may have
-                                                // rejected the AERequest, so check the success flag in the AEResponse
-                                                if aeresp.success {
-                                                    self.peers.get_mut(peer_idx as uint).next_idx += 1;
-                                                    // check if this response is for the current client cmd (could be for older one)
-                                                    if self.response_is_for_current_client_cmd(&aeresp) {
-                                                        commits += 1;
-                                                        if commits >= majority_cutoff {
-                                                            self.ldr_append_to_log_and_send_client_response(&aereq, &ev);
-                                                            break;
-                                                        }
-                                                    } else {
-                                                        // TODO: do nothing else?
-                                                    }
-                                                } else {
-                                                    // TODO: handle rejection scenario => log repair scenario
-                                                    info!("LDR: AEReq rejection: {:?}", aeresp);
-                                                    self.peers.get_mut(peer_idx as uint).next_idx -= 1;  // back off to try again
-                                                    // TODO: do something with peer.match_idx ?
-                                                    // TODO: send aereq here ? => where/how do we keep trying with this peer ?
-                                                }
-                                            }
-                                        }
-                                    }
-                                ); // end select block
-                            }
-                        }
-                    }
                 } else {
                     error!("LDR: Received message of unknown type: {:?}", ev.msg);
                 }
@@ -424,9 +363,8 @@ impl Server {
               self.log.term, self.log.idx, self.commit_idx, self.last_applied_commit);
     }
 
-    fn process_aeresponse_from_peer(&mut self, resp: IoResult<AppendEntriesResponse>) {
+    fn process_aeresponse_from_peer(&mut self, resp: IoResult<AppendEntriesResponse>) -> Option<AppendEntriesResponse> {
         match resp {
-            Err(e) => error!("LDR: Error returned from peer <?>: {:?}", e),
             Ok(aeresp) => {
                 let peer_idx = get_peer_idx(&self.peers, aeresp.peer_id);
                 assert!(peer_idx != -1);
@@ -437,6 +375,7 @@ impl Server {
                     // TODO: may need to increment by more than 1 => how determine what to set it to?
                     //       >>> probably should be aeresp.idx + 1
                     self.peers.get_mut(peer_idx as uint).next_idx += 1;
+
                 } else {
                     // TODO: handle rejection scenario => log repair scenario => put in separate method
                     info!("LDR: AEReq rejection: {:?}", aeresp);
@@ -444,12 +383,76 @@ impl Server {
                     // TODO: do something with peer.match_idx ?
                     // TODO: send aereq here ? => where/how do we keep trying with this peer ?
                 }
+                Some(aeresp)
+            },
+            Err(e) => {
+                error!("LDR: Error returned from peer <?>: {:?}", e);
+                None
             }
         }
     }
 
     fn response_is_for_current_client_cmd(&self, aeresp: &AppendEntriesResponse) -> bool {
         aeresp.idx == self.log.idx + 1  // +1 bcs server doesn't log cmd until (majority-1) peers have
+    }
+
+    fn ldr_process_cmd_from_client(&mut self, ev: &~Event,
+                                   peer_chans: &HashMap<uint, Sender<Option<AppendEntriesRequest>>>,
+                                   chrecv_response: &Receiver<IoResult<AppendEntriesResponse>>) {
+        info!("LDR: INFO 201: msg from client: {}", ev.msg);
+        match create_client_msg(&ev.msg) {
+            None            => ev.ch.send(~"400 Bad Request"),
+            Some(clientMsg) => {
+                let aereq = self.make_aereq(vec!(clientMsg));
+
+                // first send this message to the peer-handlers
+                // without logging to own log
+                for peer_chan in peer_chans.values() {
+                    peer_chan.send(Some(aereq.clone()));
+                }
+
+                // TODO: can we put the below loop in its own method ???
+                // TODO: need to set last_applied_commit at appropriate point ... not being set yet
+                let majority_cutoff = self.peers.len() / 2;
+                let mut commits = 0;
+                let mut timer = Timer::new().unwrap();
+                // in this case the timer is for avoiding infinite waits on chrecv_response
+                // setting one timeout for the whole interaction with peers, not per interaction
+                let timeout = timer.oneshot(self.heartbeat_interval * 3); // FIXME: semi-arbitrary duration - what would be better?
+                loop {
+                    let sel = Select::new();
+                    let mut chrecv_response = sel.handle(chrecv_response);
+                    let mut timeout = sel.handle(&timeout);
+                    unsafe{
+                        chrecv_response.add();
+                        timeout.add();
+                    }
+                    let ret = sel.wait();
+
+                    if ret == timeout.id() {
+                        timeout.recv();
+                        info!("LDR: TIMEOUT while waiting for responses from peer handlers");
+                        ev.ch.send(~"500 Server Error: unable to log command on leader");
+                        break;
+
+                    } else {
+                        let resp = chrecv_response.recv();
+                        match self.process_aeresponse_from_peer(resp) {
+                            None => (),
+                            Some(aeresp) => {
+                                if aeresp.success && self.response_is_for_current_client_cmd(&aeresp) {
+                                    commits += 1;
+                                    if commits >= majority_cutoff {
+                                        self.ldr_append_to_log_and_send_client_response(&aereq, ev);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } // end loop
+            }
+        }
     }
 
     fn ldr_append_to_log_and_send_client_response(&mut self, aereq: &AppendEntriesRequest, ev: &~Event) {
