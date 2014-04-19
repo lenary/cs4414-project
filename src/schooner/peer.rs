@@ -1,7 +1,6 @@
 use std::io::{BufferedReader, File, InvalidInput, IoError, IoResult};
 use std::vec::Vec;
 
-// #[deriving(Clone,ToStr,Rand)]
 #[deriving(Clone, Show)]
 pub struct Peer {
     pub id: uint,
@@ -9,8 +8,8 @@ pub struct Peer {
     pub tcpport: uint,
 
     // only used by leader
-    pub next_idx: u64,
-    pub match_idx: u64,
+    pub next_idx: u64,  // idx of next log entry to send to peer
+    pub match_idx: u64, // idx of highest log entry replicated on peer
 }
 
 ///
@@ -41,9 +40,7 @@ pub fn parse_config(cfgpath: Path) -> IoResult<Vec<Peer>> {
                     peers.push( try!(create_peer(v)) );
                 }
             },
-            Err(e) => {
-                return Err(e);
-            }
+            Err(e) => return Err(e)
         }
     }
 

@@ -328,18 +328,8 @@ impl Server {
                     Some(clientMsg) => {
                         let aereq = self.make_aereq(vec!(clientMsg));
 
-                        // first log it to own leader log
-                        match self.log.append_entries(&aereq) {
-                            Ok(_)  => (),
-                            Err(e) => {
-                                // TODO: probably need to keep a count of these failures => if more than 2, the leader should shut down?
-                                error!("leader_loop log.append_entries ERROR: {:?}", e);
-                                ev.ch.send(~"500 Server Error: unable to log command on leader");
-                                continue;
-                            }
-                        };
-
-                        // send this message to the peer-handlers
+                        // first send this message to the peer-handlers
+                        // without logging to own log
                         for peer_chan in peer_chans.values() {
                             peer_chan.send(Some(aereq.clone()));
                         }
@@ -353,6 +343,7 @@ impl Server {
                             // in this case the timer is for avoiding infinite waits on chrecv_response
                             let timeout = timer.oneshot(self.heartbeat_interval);
 
+                            // TODO: maybe do an overall timeout of say heartbeat_interval * 3 to respond to client and give up if not achieved
                             select! (
                                 () = timeout.recv() => {
                                     info!("LDR: TIMEOUT while waiting for responses from peer handlers");
@@ -367,16 +358,29 @@ impl Server {
                                         Ok(aeresp) => {
                                             // if get here an AEResponse was returned, but the peer may have
                                             // rejected the AERequest, so check the success flag in the AEResponse
+                                            let peer_idx = get_peer_idx(&self.peers, aeresp.peer_id);
+                                            assert!(peer_idx != -1);
                                             if aeresp.success {
                                                 commits += 1;
                                                 if commits >= majority_cutoff {
                                                     self.commit_idx = self.log.idx;  // ??? I think this is right - double check
-                                                    ev.ch.send(~"200 OK");
+                                                    // now commit to own log and send response
+                                                    match self.log.append_entries(&aereq) {
+                                                        Ok(_)  => ev.ch.send(~"200 OK"),
+                                                        Err(e) => {
+                                                            error!("leader_loop log.append_entries ERROR: {:?}", e);
+                                                            ev.ch.send(~"500 Server Error: unable to log command on leader");
+                                                            // TODO: the leader should probably kill itself here?
+                                                        }
+                                                    };
                                                     break;
                                                 }
                                             } else {
-                                                // TODO: handle rejection scenario
+                                                // TODO: handle rejection scenario => log repair scenario
                                                 info!("LDR: AEReq rejection: {:?}", aeresp);
+                                                self.peers.get_mut(peer_idx as uint).next_idx -= 1;  // back off to try again
+                                                // TODO: do something with peer.match_idx ?
+                                                // TODO: send aereq here ?
                                             }
                                         }
                                     }
@@ -403,6 +407,7 @@ impl Server {
         info!("LDR: leader_loop finishes with term: {}, log_idx: {}, commit_idx: {}, last_applied_commit: {}",
               self.log.term, self.log.idx, self.commit_idx, self.last_applied_commit);
     }
+
 
     // TODO: this may need to go into its own file
     ///

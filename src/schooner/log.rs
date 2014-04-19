@@ -187,7 +187,7 @@ mod test {
     use schooner::log_entry::LogEntry;
     use schooner::append_entries::AppendEntriesRequest;
 
-    static testlog: &'static str = "datalog/log.test";   //'
+    static testlog: &'static str = "datalog/log.test";
 
     fn cleanup() {
         let p = Path::new(testlog);
@@ -208,7 +208,6 @@ mod test {
     #[test]
     fn test_truncate() {
         cleanup();
-        // TODO: remove command from the logentry !!!!!
         // need to write some logs first
         let logent1 = LogEntry{idx: 1, term: 1, data: ~"a", uuid: ~"u01"};
         let logent2 = LogEntry{idx: 2, term: 1, data: ~"b", uuid: ~"u02"};
