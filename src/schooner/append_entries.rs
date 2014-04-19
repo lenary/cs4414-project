@@ -16,10 +16,6 @@ pub struct AppendEntriesRequest {
 }
 
 
-// how goraft creates it
-// return newAppendEntriesResponse(s.currentTerm, false, s.log.currentIndex(), s.log.CommitIndex()), false
-
-// TODO: this needs to have the server id in it (just AEReq has the leader id)
 #[deriving(Decodable, Encodable, Clone, Show)]
 pub struct AppendEntriesResponse {
     // required by Raft protocol
