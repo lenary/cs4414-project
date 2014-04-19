@@ -316,7 +316,7 @@ impl Server {
             //    b) AEReq from other putative leaders
             // 2) AEResponse Receiver from peer handlers
 
-            // TODO: change to select! macro
+            // TODO: change to select! macro (Note: hit problem doing that because event_recv is a borrowed ptr => get help from IRC)
             let select = Select::new();
             let mut nl_recvr = select.handle(event_recvr);
             let mut aeresp_recvr = select.handle(&chrecv_response);
@@ -327,31 +327,8 @@ impl Server {
             let ret = select.wait();
 
             if ret == aeresp_recvr.id() {
-                // DEBUG
-                error!("=-=-=-=-=-=->>>>>>>>>>>>>>>> >> >>>>>>>>> *** DEBUG 999999999999");
-                // END DEBUG
                 let resp = aeresp_recvr.recv();
-                match resp {
-                    Err(e) => error!("LDR: Error returned from peer <?>: {:?}", e),
-                    Ok(aeresp) => {
-                        let peer_idx = get_peer_idx(&self.peers, aeresp.peer_id);
-                        assert!(peer_idx != -1);
-
-                        // if get here an AEResponse was returned, but the peer may have
-                        // rejected the AERequest, so check the success flag in the AEResponse
-                        if aeresp.success {
-                            // TODO: may need to increment by more than 1 => how determine what to set it to?
-                            //       >>> probably should be aeresp.idx + 1
-                            self.peers.get_mut(peer_idx as uint).next_idx += 1;
-                        } else {
-                            // TODO: handle rejection scenario => log repair scenario => put in separate method
-                            info!("LDR: AEReq rejection: {:?}", aeresp);
-                            self.peers.get_mut(peer_idx as uint).next_idx -= 1;  // back off to try again
-                            // TODO: do something with peer.match_idx ?
-                            // TODO: send aereq here ? => where/how do we keep trying with this peer ?
-                        }
-                    }
-                }
+                self.process_aeresponse_from_peer(resp);
 
             } else {
                 let ev = nl_recvr.recv();
@@ -363,7 +340,6 @@ impl Server {
                         peer_chan.send(None); // None == STOP message to peer_handlers
                     }
                     break;
-
                 }
                 // if get an AEReq another peer thinks it is leader, so need to evaulate claim and response
                 else if is_aereq_from_another_leader(&ev.msg) {
@@ -446,6 +422,30 @@ impl Server {
 
         info!("LDR: leader_loop finishes with term: {}, log_idx: {}, commit_idx: {}, last_applied_commit: {}",
               self.log.term, self.log.idx, self.commit_idx, self.last_applied_commit);
+    }
+
+    fn process_aeresponse_from_peer(&mut self, resp: IoResult<AppendEntriesResponse>) {
+        match resp {
+            Err(e) => error!("LDR: Error returned from peer <?>: {:?}", e),
+            Ok(aeresp) => {
+                let peer_idx = get_peer_idx(&self.peers, aeresp.peer_id);
+                assert!(peer_idx != -1);
+
+                // if get here an AEResponse was returned, but the peer may have
+                // rejected the AERequest, so check the success flag in the AEResponse
+                if aeresp.success {
+                    // TODO: may need to increment by more than 1 => how determine what to set it to?
+                    //       >>> probably should be aeresp.idx + 1
+                    self.peers.get_mut(peer_idx as uint).next_idx += 1;
+                } else {
+                    // TODO: handle rejection scenario => log repair scenario => put in separate method
+                    info!("LDR: AEReq rejection: {:?}", aeresp);
+                    self.peers.get_mut(peer_idx as uint).next_idx -= 1;  // back off to try again
+                    // TODO: do something with peer.match_idx ?
+                    // TODO: send aereq here ? => where/how do we keep trying with this peer ?
+                }
+            }
+        }
     }
 
     fn response_is_for_current_client_cmd(&self, aeresp: &AppendEntriesResponse) -> bool {
