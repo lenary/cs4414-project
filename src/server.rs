@@ -321,6 +321,11 @@ impl Server {
                 }
                 break;
 
+            }
+            // if get an AEReq another peer thinks it is leader, so need to evaulate claim and response
+            else if is_aereq_from_another_leader(&ev.msg) {
+                // TODO: implement me!
+                
             } else if is_cmd_from_client(ev.msg) {
                 info!("LDR: INFO 201: msg from client: {:?}", ev.msg);
                 match create_client_msg(&ev.msg) {
@@ -619,6 +624,12 @@ fn create_client_msg(msg: &~str) -> Option<ClientMsg> {
     })
 }
 
+
+fn is_aereq_from_another_leader(msg: &~str) -> bool {
+    // TODO: implement detection of whether the message is an AppendEntriesRequest
+    false  // BOGUS
+}
+    
 
 
 fn is_cmd_from_client(msg: &str) -> bool {
