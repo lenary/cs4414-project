@@ -320,12 +320,20 @@ impl Server {
             // 2) AEResponse Receiver from peer handlers
 
             // TODO: change to select! macro (Note: hit problem doing that because event_recv is a borrowed ptr => get help from IRC)
+            let mut timer = Timer::new().unwrap();
+            // in this case the timer is for avoiding infinite waits on chrecv_response
+            // setting one timeout for the whole interaction with peers, not per interaction
+            let timeout = timer.oneshot(self.heartbeat_interval);
+            
             let select = Select::new();
             let mut nl_recvr = select.handle(event_recvr);
             let mut aeresp_recvr = select.handle(&chrecv_response);
+            let mut timeout = select.handle(&timeout);
+            
             unsafe {
                 nl_recvr.add();
                 aeresp_recvr.add();
+                timeout.add();
             }
             let ret = select.wait();
 
@@ -333,6 +341,11 @@ impl Server {
                 let resp = aeresp_recvr.recv();
                 self.ldr_process_aeresponse_from_peer(resp);
 
+            } else if ret == timeout.id() {
+                timeout.recv();
+                info!("LDR: HEARTBEAT TIMEOUT");
+                self.ldr_send_heartbeat(&mut pool, &chsend_response);
+                
             } else {
                 let ev = nl_recvr.recv();
                 debug!("follower: event message: {}", ev.msg);
@@ -400,6 +413,23 @@ impl Server {
         aeresp.idx == self.log.idx + 1  // +1 bcs server doesn't log cmd until (majority-1) peers have
     }
 
+    fn ldr_send_heartbeat(&mut self, 
+                          pool: &mut TaskPool<uint>,
+                          chsend_response: &Sender<IoResult<AppendEntriesResponse>>) {
+        info!("LDR: INFO 301: sending hearbeat via peer_handlers");
+        let hearbeat_aereq = self.make_aereq(Vec::new());
+        
+        for p in self.peers.iter() {
+            let chsend_aeresp = chsend_response.clone();
+            let peer = p.clone();
+            let aereq_copy = hearbeat_aereq.clone();
+            pool.execute(proc(task_id: &uint) {
+                debug!("executing task from pool: task_id {:u}", *task_id);
+                Server::leader_peer_handler(peer, chsend_aeresp, aereq_copy);
+            });
+        }
+    }
+    
     fn ldr_process_cmd_from_client(&mut self, ev: &~Event,
                                    pool: &mut TaskPool<uint>,
                                    chsend_response: &Sender<IoResult<AppendEntriesResponse>>,
