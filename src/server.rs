@@ -384,36 +384,48 @@ impl Server {
                 // if get here an AEResponse was returned, but the peer may have
                 // rejected the AERequest, so check the success flag in the AEResponse
                 if aeresp.success {
-                    // TODO: may need to increment by more than 1 => how determine what to set it to?
-                    //       >>> probably should be aeresp.idx + 1
-                    self.peers.get_mut(peer_idx).next_idx += 1;
+                    // TODO: should we check that the aeresp is sane (i.e., not larger than self.log.idx?)
+                    self.peers.get_mut(peer_idx).next_idx = aeresp.idx + 1;
 
                 } else {
-                    // TODO: handle rejection scenario => log repair scenario => put in separate method
+                    // AEResponse#success=false rejection scenario
                     info!("LDR: AEReq rejection: {:?}", aeresp);
 
+                    // interpretation of scenarios
+                    // if terms match:
+                    //   if peer_next_idx == self.log.idx + 1: follower has truncated logs and all now matches
+                    //   if peer_next_idx  < self.log.idx + 1: follower is behind => send missing AEReqs
+                    //   if peer_next_idx  > self.log.idx + 1: code logic error, follower should have truncated its logs
                     match (aeresp.term == self.log.term, aeresp.idx == self.log.idx) {
-                        // log repair scenario 1:
-                        // peer idx was ahead of leader prev_log_idx and truncated its results back leader
                         (true, true)   => {
+                            debug!("LDR: AEResponse rejection SCENARIO 1: {:?}", aeresp);
+                            // log repair scenario 1:
+                            // peer idx was *ahead of* leader prev_log_idx and truncated its results back leader
+                            self.peers.get_mut(peer_idx).next_idx = aeresp.idx + 1;
+                        },
+                        (true, false)  => {
+                            debug!("LDR: AEResponse rejection SCENARIO 2: {:?}", aeresp);
+                            // log repair scenario 2:
+                            // peer idx was *behind* leader prev_log_idx and needs to catch up
+
+                            if aeresp.idx > self.log.idx {
+                                fail!("server.ldr_process_aeresponse_from_peer: peer <{}> has aeresp.idx > self.log.idx; {}",
+                                      self.peers.get(peer_idx).id, "ERROR: should have truncated logs")
+                            }
+
                             let peer_next_idx = aeresp.idx + 1;
                             self.peers.get_mut(peer_idx).next_idx = peer_next_idx;
                             let chsend_aeresp = chsend_response.clone();
 
-                            if peer_next_idx < self.log.idx + 1 {
-
-                                let aereq = self.make_aereq_from_log(peer_next_idx);
-                                let peer_copy = self.peers.get_mut(peer_idx).clone();
-                                pool.execute(proc(_: &uint) {
-                                    Server::leader_peer_handler(peer_copy, chsend_aeresp, aereq);
-                                });
-                            }
+                            let aereq = self.make_aereq_from_log(peer_next_idx);
+                            let peer_copy = self.peers.get_mut(peer_idx).clone();
+                            pool.execute(proc(_: &uint) {
+                                Server::leader_peer_handler(peer_copy, chsend_aeresp, aereq);
+                            });
                         },
-                        (true, false)  => {},
                         (false, true)  => {},
                         (false, false) => {},
                     }
-                    ///////////
 
                     self.peers.get_mut(peer_idx).next_idx -= 1;  // back off to try again
                     // TODO: do something with peer.match_idx ?
@@ -590,74 +602,23 @@ impl Server {
         info!("PEER HANDLER FOR {} SHUTTING DOWN", peer.id);
     }
 
-    // TODO: this may need to go into its own file
-    ///
-    /// Runs in its own task and handles all leader->follower messaging to the specified Peer
-    /// Params:
-    /// - peer: Peer this handler makes network connections to
-    /// - chrecv: Receiver channel that leader loop sends AEReq or STOP message on
-    /// - chsend: Sender channel for this handler to message back to leader_loop with the
-    ///           response from the peer
-    ///
-    // fn leader_peer_handler(peer: Peer, heartbeat_interval: u64,
-    //                        chrecv: Receiver<Option<AppendEntriesRequest>>,
-    //                        chsend: Sender<IoResult<AppendEntriesResponse>>) {
-    //     info!("LEADER PEER_HANDLER for peer {:?}", peer.id);
 
-    //     let ipaddr = format!("{}:{:u}", &peer.ip, peer.tcpport);
-    //     let addr = from_str::<SocketAddr>(ipaddr).unwrap();
-
-    //     let aereq = chrecv.recv();
-    //     // is client cmd
-    //     info!("RECEIVED CLIENT CMD {:?} for peer hdlr: {:?}", aereq, peer.id);
-    //     // connect to peer
-    //     info!("PHDLR: DEBUG 887: connecting to: {}", ipaddr.clone());
-
-    //     let aereqstr = json::Encoder::str_encode(&aereq);
-    //     let mut stream = TcpStream::connect(addr.clone());
-    //     // have to add the Length to the network message
-    //     let result = stream.write_str(format!("Length: {:u}\n{:s}", aereqstr.len(), aereqstr));
-
-    //     debug!("PHDLR DEBUG 888 for peer: {}", peer.id);
-    //     if result.is_err() {
-    //         info!("PHDLR for peer {} ==> WARN: Unable to send message to peer {}", peer.id, peer);
-    //         return;
-    //     }
-    //     let _ = stream.flush();
-    //     debug!("PHDLR DEBUG 890 for peer: {}", peer.id);
-    //     // FIXME: this is a blocking call => how avoid an eternal wait?
-
-    //     // fn read(&mut self, buf: &mut [u8]) -> IoResult<uint>
-    //     // let mut buf: Vec<u8> = Vec::from_elem(1, 0u8);
-    //     // let response = stream.read(buf.as_mut_slice());
-    //     // TODO: currently responses do not have a length in the message => probably should?
-    //     // FIXME: this is a blocking call => how avoid an eternal wait?
-    //     let response = stream.read_to_str(); // this type of read is only safe if the other end closes the stream (EOF)
-    //     info!(">>===> PEER HDLR {} ==> PEER RESPONSE: {}", peer.id, response);
-
-    //     match response {
-    //         Ok(aeresp_str) => {
-    //             let aeresp = append_entries::decode_append_entries_response(aeresp_str).
-    //                 ok().expect(format!("leader_peer_handler: decode aeresp failed for: {:?}", aeresp_str));
-    //             chsend.send(Ok(aeresp));
-    //         },
-    //         Err(e) => chsend.send(Err(e))
-    //     }
-
-    //     drop(stream);  // TODO: probably unneccesary since goes out of scope
-    //     info!("PEER HANDLER FOR {} SHUTTING DOWN", peer.id);
-    // }
-
-
-    // TODO: what the hell is this state?  Got it from goraft => is it needed?
+    // TODO: what is this state?  Got it from goraft => is it needed?
     fn snapshotting_loop(&mut self) {
         info!("snapshotting loop");
         self.state = Follower;
     }
 
+    ///
+    /// Crates an AERequest with already logged entries starting from `logidx`
+    /// in the Log cache.
+    ///
     fn make_aereq_from_log(&mut self, logidx: u64) -> AppendEntriesRequest {
-        let mut entries: Vec<LogEntry> = Vec::with_capacity((self.log.idx - logidx) as uint);
+        // let mut entries: Vec<LogEntry> = Vec::with_capacity((self.log.idx - logidx) as uint);
 
+        // FIXME: dangerous => converting from u64 to uint, so in effect can't cache
+        //        more then uint-max in memory
+        let entries = Vec::from_slice(self.log.logentries.slice_from(logidx as uint));
 
         AppendEntriesRequest {
             term: self.log.term,
@@ -1397,11 +1358,8 @@ mod test {
         let clt4_result = chrecv4.recv();
         let clt5_result = chrecv5.recv();
 
-        timer::sleep(300); // wait a short while for all messages to get handled
+        timer::sleep(500); // wait a short while for all messages to get handled
 
-        spawn(proc() {
-            send_shutdown_signal(1);
-        });
         spawn(proc() {
             send_shutdown_signal(2);
         });
@@ -1411,7 +1369,10 @@ mod test {
         spawn(proc() {
             send_shutdown_signal(4);
         });
-        send_shutdown_signal(5);
+        spawn(proc() {
+            send_shutdown_signal(5);
+        });
+        send_shutdown_signal(1);
 
         assert!(clt1_result.is_ok());
         assert!(clt2_result.is_ok());
