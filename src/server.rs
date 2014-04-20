@@ -65,8 +65,8 @@ pub struct Server {
     peers: Vec<Peer>,          // peer servers
     leader: int,               // "pointer" to peer that is current leader (idx into peers Vec)  // TODO: should this be &Peer?
 
-    c: Sender<~Event>,  // TODO: keep chan/sender?
-    p: Receiver<~Event>,
+    // c: Sender<~Event>,  // TODO: keep chan/sender?
+    // p: Receiver<~Event>,
 
     heartbeat_interval: u64,
     election_timeout: u64,
@@ -114,7 +114,6 @@ impl Server {
     ///
     pub fn new(id: uint, cfgpath: Path, logpath: Path) -> IoResult<~Server> {
 
-        let (ch, pt): (Sender<~Event>, Receiver<~Event>) = channel();
         let lg = try!(Log::new(logpath.clone()));
         let peers: Vec<Peer> = try!(peer::parse_config(cfgpath.clone()));
         let myidx = get_peer_idx(&peers, id);
@@ -141,8 +140,8 @@ impl Server {
             last_applied_commit: UNKNOWN,
             peers: other_peers,
             leader: UNKNOWN_LDR,
-            c: ch,
-            p: pt,
+            // c: ch,
+            // p: pt,
             heartbeat_interval: DEFAULT_HEARTBEAT_INTERVAL,  // TODO: need to parameterize
             election_timeout: DEFAULT_ELECTION_TIMEOUT,      // TODO: need to parameterize
         };
@@ -174,25 +173,25 @@ impl Server {
             None => self.state = Follower
         }
 
-        let event_chan = self.c.clone();
+        let (chsend, chrecv): (Sender<~Event>, Receiver<~Event>) = channel();
         let conx_str = format!("{}:{:u}", &self.ip, self.tcpport);
         let svr_id = self.id;
         spawn(proc() {
-            network_listener(conx_str, event_chan, svr_id);
+            network_listener(conx_str, chsend, svr_id);
         });
 
-        self.serve_loop();
+        self.serve_loop(chrecv);
 
         Ok(())
     }
 
-    fn serve_loop(&mut self) {
+    fn serve_loop(&mut self, event_recvr: Receiver<~Event>) {
         debug!("Now serving => loop until Stopped");
         loop {
             match self.state {
-                Follower     => self.follower_loop(),
+                Follower     => self.follower_loop(&event_recvr),
                 Candidate    => self.candidate_loop(),
-                Leader       => self.leader_loop(),
+                Leader       => self.leader_loop(&event_recvr),
                 Snapshotting => self.snapshotting_loop(),
                 Stopped      => break
             }
@@ -202,7 +201,7 @@ impl Server {
     }
 
 
-    fn follower_loop(&mut self) {
+    fn follower_loop(&mut self, event_recvr: &Receiver<~Event>) {
         let mut timer = Timer::new().unwrap();
 
         loop {
@@ -214,7 +213,7 @@ impl Server {
             //       https://github.com/mozilla/rust/issues/12902
             // so we have to manually code what the macro provides
             let sel = Select::new();
-            let mut pt = sel.handle(&self.p);
+            let mut pt = sel.handle(event_recvr);
             let mut timeout = sel.handle(&timeout);
             unsafe{
                 pt.add();
@@ -282,7 +281,7 @@ impl Server {
         self.state = Leader;
     }
 
-    fn leader_loop(&mut self) {
+    fn leader_loop(&mut self, event_recvr: &Receiver<~Event>) {
         info!("leader loop with id = {:?}", self.id);
 
         // TODO: change this to a Vec<(peer.id, chsend)> and just search linearly through it => no need for full hashmap
@@ -311,88 +310,48 @@ impl Server {
         loop {
             info!("in leader loop for = {} :: waiting on self.p", self.id);
 
-            let ev = self.p.recv();
-            debug!("follower: event message: {}", ev.msg);
-            if is_stop_msg(ev.msg) {
-                debug!("LDR: DEBUG 200");
-                self.state = Stopped;
-                for peer_chan in peer_chans.values() {
-                    peer_chan.send(None); // None == STOP message to peer_handlers
-                }
-                break;
+            // select over
+            // 1) network_listener receiver, which brings in:
+            //    a) client cmds
+            //    b) AEReq from other putative leaders
+            // 2) AEResponse Receiver from peer handlers
 
-            } else if is_cmd_from_client(ev.msg) {
-                info!("LDR: INFO 201: msg from client: {:?}", ev.msg);
-                match create_client_msg(&ev.msg) {
-                    None            => ev.ch.send(~"400 Bad Request"),
-                    Some(clientMsg) => {
-                        let aereq = self.make_aereq(vec!(clientMsg));
-
-                        // first log it to own leader log
-                        match self.log.append_entries(&aereq) {
-                            Ok(_)  => (),
-                            Err(e) => {
-                                // TODO: probably need to keep a count of these failures => if more than 2, the leader should shut down?
-                                error!("leader_loop log.append_entries ERROR: {:?}", e);
-                                ev.ch.send(~"500 Server Error: unable to log command on leader");
-                                continue;
-                            }
-                        };
-
-                        // send this message to the peer-handlers
-                        for peer_chan in peer_chans.values() {
-                            peer_chan.send(Some(aereq.clone()));
-                        }
-
-                        // TODO: can we put the below loop in its own method ???
-                        // TODO: need to set last_applied_commit at appropriate point ... not being set yet
-                        let majority_cutoff = self.peers.len() / 2;
-                        let mut commits = 0;
-                        let mut timer = Timer::new().unwrap();
-                        loop {
-                            // in this case the timer is for avoiding infinite waits on chrecv_response
-                            let timeout = timer.oneshot(self.heartbeat_interval);
-
-                            select! (
-                                () = timeout.recv() => {
-                                    info!("LDR: TIMEOUT while waiting for responses from peer handlers");
-                                    ev.ch.send(~"500 Server Error: unable to log command on leader");
-                                    break;
-                                },
-                                resp = chrecv_response.recv() => {
-                                    // TODO: it is possible that the response pulled off will be for a different (previous)
-                                    //       client cmd => need to detect and account for this!
-                                    match resp {
-                                        Err(e) => error!("LDR: Error returned from peer <?>: {:?}", e), // TODO: get peer id from AEResp once added
-                                        Ok(aeresp) => {
-                                            // if get here an AEResponse was returned, but the peer may have
-                                            // rejected the AERequest, so check the success flag in the AEResponse
-                                            if aeresp.success {
-                                                commits += 1;
-                                                if commits >= majority_cutoff {
-                                                    self.commit_idx = self.log.idx;  // ??? I think this is right - double check
-                                                    ev.ch.send(~"200 OK");
-                                                    break;
-                                                }
-                                            } else {
-                                                // TODO: handle rejection scenario
-                                                info!("LDR: AEReq rejection: {:?}", aeresp);
-                                            }
-                                        }
-                                    }
-                                }
-                            ); // end select block
-
-                            if commits >= majority_cutoff {
-                                debug!("++++++ LDR: DEBUG 432: have enough commits for majority")
-                                break;
-                            }
-                        }
-                    }
-                }
-            } else {
-                error!("LDR: Received message of unknown type: {:?}", ev.msg);
+            // TODO: change to select! macro (Note: hit problem doing that because event_recv is a borrowed ptr => get help from IRC)
+            let select = Select::new();
+            let mut nl_recvr = select.handle(event_recvr);
+            let mut aeresp_recvr = select.handle(&chrecv_response);
+            unsafe {
+                nl_recvr.add();
+                aeresp_recvr.add();
             }
+            let ret = select.wait();
+
+            if ret == aeresp_recvr.id() {
+                let resp = aeresp_recvr.recv();
+                self.ldr_process_aeresponse_from_peer(resp);
+
+            } else {
+                let ev = nl_recvr.recv();
+                debug!("follower: event message: {}", ev.msg);
+                if is_stop_msg(ev.msg) {
+                    debug!("LDR: DEBUG 200");
+                    self.state = Stopped;
+                    for peer_chan in peer_chans.values() {
+                        peer_chan.send(None); // None == STOP message to peer_handlers
+                    }
+                    break;
+                }
+                // if get an AEReq another peer thinks it is leader, so need to evaulate claim and response
+                else if is_aereq_from_another_leader(&ev.msg) {
+                    // TODO: implement me!
+
+                } else if is_cmd_from_client(ev.msg) {
+                    self.ldr_process_cmd_from_client(&ev, &peer_chans, &chrecv_response);
+
+                } else {
+                    error!("LDR: Received message of unknown type: {:?}", ev.msg);
+                }
+            } // end else handle network_listener_receiver event
         } // end main loop
 
         // TODO: should this be set like this?
@@ -403,6 +362,118 @@ impl Server {
         info!("LDR: leader_loop finishes with term: {}, log_idx: {}, commit_idx: {}, last_applied_commit: {}",
               self.log.term, self.log.idx, self.commit_idx, self.last_applied_commit);
     }
+
+    ///
+    /// TODO: DOCUMENT ME
+    /// Returns Some(AppendEntriesResponse) if the IoResult was not an error, otherwise returns None
+    /// 
+    fn ldr_process_aeresponse_from_peer(&mut self, resp: IoResult<AppendEntriesResponse>) -> Option<AppendEntriesResponse> {
+        match resp {
+            Ok(aeresp) => {
+                let peer_idx = get_peer_idx(&self.peers, aeresp.peer_id);
+                assert!(peer_idx != -1);
+
+                // if get here an AEResponse was returned, but the peer may have
+                // rejected the AERequest, so check the success flag in the AEResponse
+                if aeresp.success {
+                    // TODO: may need to increment by more than 1 => how determine what to set it to?
+                    //       >>> probably should be aeresp.idx + 1
+                    self.peers.get_mut(peer_idx as uint).next_idx += 1;
+
+                } else {
+                    // TODO: handle rejection scenario => log repair scenario => put in separate method
+                    info!("LDR: AEReq rejection: {:?}", aeresp);
+                    self.peers.get_mut(peer_idx as uint).next_idx -= 1;  // back off to try again
+                    // TODO: do something with peer.match_idx ?
+                    // TODO: send aereq here ? => where/how do we keep trying with this peer ?
+                }
+                Some(aeresp)
+            },
+            Err(e) => {
+                error!("LDR: Error returned from peer <?>: {:?}", e);
+                None
+            }
+        }
+    }
+
+    fn response_is_for_current_client_cmd(&self, aeresp: &AppendEntriesResponse) -> bool {
+        aeresp.idx == self.log.idx + 1  // +1 bcs server doesn't log cmd until (majority-1) peers have
+    }
+
+    fn ldr_process_cmd_from_client(&mut self, ev: &~Event,
+                                   peer_chans: &HashMap<uint, Sender<Option<AppendEntriesRequest>>>,
+                                   chrecv_response: &Receiver<IoResult<AppendEntriesResponse>>) {
+        info!("LDR: INFO 201: msg from client: {}", ev.msg);
+        match create_client_msg(&ev.msg) {
+            None            => ev.ch.send(~"400 Bad Request"),
+            Some(clientMsg) => {
+                let aereq = self.make_aereq(vec!(clientMsg));
+
+                // first send this message to the peer-handlers
+                // without logging to own log
+                for peer_chan in peer_chans.values() {
+                    peer_chan.send(Some(aereq.clone()));
+                }
+
+                // TODO: can we put the below loop in its own method ???
+                // TODO: need to set last_applied_commit at appropriate point ... not being set yet
+                let majority_cutoff = self.peers.len() / 2;
+                let mut commits = 0;
+                let mut timer = Timer::new().unwrap();
+                // in this case the timer is for avoiding infinite waits on chrecv_response
+                // setting one timeout for the whole interaction with peers, not per interaction
+                let timeout = timer.oneshot(self.heartbeat_interval * 3); // FIXME: semi-arbitrary duration - what would be better?
+                loop {
+                    let sel = Select::new();
+                    let mut chrecv_response = sel.handle(chrecv_response);
+                    let mut timeout = sel.handle(&timeout);
+                    unsafe{
+                        chrecv_response.add();
+                        timeout.add();
+                    }
+                    let ret = sel.wait();
+
+                    if ret == timeout.id() {
+                        timeout.recv();
+                        info!("LDR: TIMEOUT while waiting for responses from peer handlers");
+                        ev.ch.send(~"500 Server Error: unable to log command on leader");
+                        break;
+
+                    } else {
+                        let resp = chrecv_response.recv();
+                        match self.process_aeresponse_from_peer(resp) {
+                            None => (),
+                            Some(aeresp) => {
+                                if aeresp.success && self.response_is_for_current_client_cmd(&aeresp) {
+                                    commits += 1;
+                                    if commits >= majority_cutoff {
+                                        self.ldr_append_to_log_and_send_client_response(&aereq, ev);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } // end loop
+            }
+        }
+    }
+
+    fn ldr_append_to_log_and_send_client_response(&mut self, aereq: &AppendEntriesRequest, ev: &~Event) {
+        // commit to own log and send response
+        match self.log.append_entries(aereq) {
+            Ok(_)  => {
+                self.commit_idx = self.log.idx;  // ??? I think this is right - double check
+                ev.ch.send(~"200 OK");
+            },
+            Err(e) => {
+                error!("leader_loop log.append_entries ERROR: {:?}", e);
+                ev.ch.send(~"500 Server Error: unable to log command on leader");
+                // TODO: the leader should probably kill itself here?
+            }
+        };
+    }
+
 
     // TODO: this may need to go into its own file
     ///
@@ -601,6 +672,12 @@ fn create_client_msg(msg: &~str) -> Option<ClientMsg> {
         uuid: parts[0].trim().to_owned(),
         cmd:  parts[1].trim().to_owned()
     })
+}
+
+
+fn is_aereq_from_another_leader(msg: &~str) -> bool {
+    // TODO: implement detection of whether the message is an AppendEntriesRequest
+    false  // BOGUS
 }
 
 
