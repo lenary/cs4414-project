@@ -1,5 +1,4 @@
 #![feature(phase)]
-extern crate collections;
 #[phase(syntax, link)]
 extern crate log;
 extern crate rand;
@@ -14,9 +13,9 @@ use std::io::net::ip::SocketAddr;
 use std::io::net::tcp::{TcpListener,TcpStream};
 use std::vec::Vec;
 
-use collections::hashmap::HashMap;
 use rand::{task_rng, Rng};
 use serialize::json;
+use sync::TaskPool;
 
 // use std::comm::{Empty, Data, Disconnected};
 
@@ -35,6 +34,7 @@ static DEFAULT_ELECTION_TIMEOUT  : u64 = 150;  // in millis
 static STOP_MSG: &'static str = "STOP";
 static UNKNOWN: u64     = 0u64;  // used for idx and term
 static UNKNOWN_LDR: int = -1;
+static TASK_POOL_SZ: uint = 16;  // TODO: how decide on the appropriate size?
 
 /* ---[ data structures ]--- */
 
@@ -284,26 +284,29 @@ impl Server {
     fn leader_loop(&mut self, event_recvr: &Receiver<~Event>) {
         info!("leader loop with id = {:?}", self.id);
 
-        // TODO: change this to a Vec<(peer.id, chsend)> and just search linearly through it => no need for full hashmap
-        //       or implement some simple ArrayHashMap like Clojure has
-        let mut peer_chans: HashMap<uint, Sender<Option<AppendEntriesRequest>>> = HashMap::new();
+        let mut pool = TaskPool::new(TASK_POOL_SZ, || {
+            proc(id: uint) -> uint { id }
+        });
 
-        // spawn the peer handler tasks
+        // DEBUG
+        pool.execute(proc(id: &uint) {
+            debug!("executing task from pool: task {:u}", *id);
+        });
+        // END DEBUG
+
         let (chsend_response, chrecv_response): (Sender<IoResult<AppendEntriesResponse>>,
                                                  Receiver<IoResult<AppendEntriesResponse>>) = channel();
+
+        // execute the peer handler tasks for the first heartbeat
         let first_heartbeat_msg = self.make_aereq(Vec::new());
         for p in self.peers.iter() {
-            let (chsend_aereq, chrecv_aereq) : (Sender<Option<AppendEntriesRequest>>, Receiver<Option<AppendEntriesRequest>>) = channel();
-
-            // launch a separate task to handle each IO interaction with the followers
-            let peer = p.clone();
             let chsend_aeresp = chsend_response.clone();
-            chsend_aereq.send( Some(first_heartbeat_msg.clone()) ); // put on queue for first heartbeat msg
-            let hbeat_interval = self.heartbeat_interval;
-            spawn(proc() {
-                Server::leader_peer_handler(peer, hbeat_interval, chrecv_aereq, chsend_aeresp);
+            let peer = p.clone();
+            let heartbeat_aereq = first_heartbeat_msg.clone();
+            pool.execute(proc(task_id: &uint) {
+                debug!("executing task from pool: task_id {:u}", *task_id);
+                Server::leader_peer_handler(peer, chsend_aeresp, heartbeat_aereq);
             });
-            peer_chans.insert(p.id, chsend_aereq);
         }
 
         // now wait for network msgs (or timeout)
@@ -336,9 +339,6 @@ impl Server {
                 if is_stop_msg(ev.msg) {
                     debug!("LDR: DEBUG 200");
                     self.state = Stopped;
-                    for peer_chan in peer_chans.values() {
-                        peer_chan.send(None); // None == STOP message to peer_handlers
-                    }
                     break;
                 }
                 // if get an AEReq another peer thinks it is leader, so need to evaulate claim and response
@@ -346,7 +346,7 @@ impl Server {
                     // TODO: implement me!
 
                 } else if is_cmd_from_client(ev.msg) {
-                    self.ldr_process_cmd_from_client(&ev, &peer_chans, &chrecv_response);
+                    self.ldr_process_cmd_from_client(&ev, &mut pool, &chsend_response, &chrecv_response);
 
                 } else {
                     error!("LDR: Received message of unknown type: {:?}", ev.msg);
@@ -366,7 +366,7 @@ impl Server {
     ///
     /// TODO: DOCUMENT ME
     /// Returns Some(AppendEntriesResponse) if the IoResult was not an error, otherwise returns None
-    /// 
+    ///
     fn ldr_process_aeresponse_from_peer(&mut self, resp: IoResult<AppendEntriesResponse>) -> Option<AppendEntriesResponse> {
         match resp {
             Ok(aeresp) => {
@@ -401,7 +401,8 @@ impl Server {
     }
 
     fn ldr_process_cmd_from_client(&mut self, ev: &~Event,
-                                   peer_chans: &HashMap<uint, Sender<Option<AppendEntriesRequest>>>,
+                                   pool: &mut TaskPool<uint>,
+                                   chsend_response: &Sender<IoResult<AppendEntriesResponse>>,
                                    chrecv_response: &Receiver<IoResult<AppendEntriesResponse>>) {
         info!("LDR: INFO 201: msg from client: {}", ev.msg);
         match create_client_msg(&ev.msg) {
@@ -411,11 +412,16 @@ impl Server {
 
                 // first send this message to the peer-handlers
                 // without logging to own log
-                for peer_chan in peer_chans.values() {
-                    peer_chan.send(Some(aereq.clone()));
+                for p in self.peers.iter() {
+                    let chsend_aeresp = chsend_response.clone();
+                    let peer = p.clone();
+                    let aereq_copy = aereq.clone();
+                    pool.execute(proc(task_id: &uint) {
+                        debug!("executing task from pool: task_id {:u}", *task_id);
+                        Server::leader_peer_handler(peer, chsend_aeresp, aereq_copy);
+                    });
                 }
 
-                // TODO: can we put the below loop in its own method ???
                 // TODO: need to set last_applied_commit at appropriate point ... not being set yet
                 let majority_cutoff = self.peers.len() / 2;
                 let mut commits = 0;
@@ -441,7 +447,7 @@ impl Server {
 
                     } else {
                         let resp = chrecv_response.recv();
-                        match self.process_aeresponse_from_peer(resp) {
+                        match self.ldr_process_aeresponse_from_peer(resp) {
                             None => (),
                             Some(aeresp) => {
                                 if aeresp.success && self.response_is_for_current_client_cmd(&aeresp) {
@@ -474,6 +480,48 @@ impl Server {
         };
     }
 
+    fn leader_peer_handler(peer: Peer, chsend: Sender<IoResult<AppendEntriesResponse>>, aereq: AppendEntriesRequest) {
+
+        info!("LEADER PEER_HANDLER for peer {:?}", peer.id);
+
+        let ipaddr = format!("{}:{:u}", &peer.ip, peer.tcpport);
+        let addr = from_str::<SocketAddr>(ipaddr).unwrap();
+        info!("PHDLR: DEBUG x887: connecting to: {}", ipaddr.clone());
+
+        let aereqstr = json::Encoder::str_encode(&aereq);
+        let mut stream = TcpStream::connect(addr.clone());
+        // have to add the Length to the network message
+        let result = stream.write_str(format!("Length: {:u}\n{:s}", aereqstr.len(), aereqstr));
+
+        debug!("PHDLR DEBUG 888 for peer: {}", peer.id);
+        if result.is_err() {
+            info!("PHDLR for peer {} ==> WARN: Unable to send message to peer {}", peer.id, peer);
+            return;
+        }
+        let _ = stream.flush();
+        debug!("PHDLR DEBUG 890 for peer: {}", peer.id);
+        // FIXME: this is a blocking call => how avoid an eternal wait?
+
+        // fn read(&mut self, buf: &mut [u8]) -> IoResult<uint>
+        // let mut buf: Vec<u8> = Vec::from_elem(1, 0u8);
+        // let response = stream.read(buf.as_mut_slice());
+        // TODO: currently responses do not have a length in the message => probably should?
+        // FIXME: this is a blocking call => how avoid an eternal wait?
+        let response = stream.read_to_str(); // this type of read is only safe if the other end closes the stream (EOF)
+        info!(">>===> PEER HDLR {} ==> PEER RESPONSE: {}", peer.id, response);
+
+        match response {
+            Ok(aeresp_str) => {
+                let aeresp = append_entries::decode_append_entries_response(aeresp_str).
+                    ok().expect(format!("leader_peer_handler: decode aeresp failed for: {:?}", aeresp_str));
+                chsend.send(Ok(aeresp));
+            },
+            Err(e) => chsend.send(Err(e))
+        }
+
+        drop(stream);  // TODO: probably unneccesary since goes out of scope
+        info!("PEER HANDLER FOR {} SHUTTING DOWN", peer.id);
+    }
 
     // TODO: this may need to go into its own file
     ///
@@ -484,87 +532,54 @@ impl Server {
     /// - chsend: Sender channel for this handler to message back to leader_loop with the
     ///           response from the peer
     ///
-    fn leader_peer_handler(peer: Peer, heartbeat_interval: u64,
-                           chrecv: Receiver<Option<AppendEntriesRequest>>,
-                           chsend: Sender<IoResult<AppendEntriesResponse>>) {
-        info!("LEADER PEER_HANDLER for peer {:?}", peer.id);
+    // fn leader_peer_handler(peer: Peer, heartbeat_interval: u64,
+    //                        chrecv: Receiver<Option<AppendEntriesRequest>>,
+    //                        chsend: Sender<IoResult<AppendEntriesResponse>>) {
+    //     info!("LEADER PEER_HANDLER for peer {:?}", peer.id);
 
-        let mut last_aereq: Option<AppendEntriesRequest> = None;
-        let mut timer = Timer::new().unwrap();
-        let ipaddr = format!("{}:{:u}", &peer.ip, peer.tcpport);
-        let addr = from_str::<SocketAddr>(ipaddr).unwrap();
+    //     let ipaddr = format!("{}:{:u}", &peer.ip, peer.tcpport);
+    //     let addr = from_str::<SocketAddr>(ipaddr).unwrap();
 
-        loop {
-            let timeout = timer.oneshot(heartbeat_interval);
+    //     let aereq = chrecv.recv();
+    //     // is client cmd
+    //     info!("RECEIVED CLIENT CMD {:?} for peer hdlr: {:?}", aereq, peer.id);
+    //     // connect to peer
+    //     info!("PHDLR: DEBUG 887: connecting to: {}", ipaddr.clone());
 
-            select! (
-                () = timeout.recv() => {
-                    info!("PEER HANDLER: TIMEOUT sending heartbeat msg");
-                    let mut hrtbeat_req = last_aereq.clone().unwrap();
-                    hrtbeat_req.entries = Vec::new();
-                    let aereqstr = json::Encoder::str_encode(&hrtbeat_req);
-                    let mut stream = TcpStream::connect(addr.clone());
-                    // have to add the Length to the network message
-                    let result = stream.write_str(format!("Length: {:u}\n{:s}", aereqstr.len(), aereqstr));
+    //     let aereqstr = json::Encoder::str_encode(&aereq);
+    //     let mut stream = TcpStream::connect(addr.clone());
+    //     // have to add the Length to the network message
+    //     let result = stream.write_str(format!("Length: {:u}\n{:s}", aereqstr.len(), aereqstr));
 
-                    info!("PEER HANDLER: sending heartbeat to: {}", peer.id);
-                    if result.is_err() {
-                        error!("PEER HANDLER for peer {}: WARN: Unable to send heartbeat to peer {}", peer.id, peer);
-                        continue;
-                    }
-                    let _ = stream.flush();
-                    // TODO: should we read response? ignore it? maybe the follower shouldn't send a response to a heartbeat?
-                    let _ = stream.read_to_str(); // this type of read is only safe if the other end closes the stream (EOF)
-                    drop(stream);
-                },
-                aereq = chrecv.recv() => {
-                    if aereq.is_none() {
-                        info!("RECEIVED STOP MESSAGE for peer hdlr {:?}", peer.id);
-                        break;
-                    } else {
-                        last_aereq = aereq;
-                        // is client cmd
-                        info!("RECEIVED CLIENT CMD {:?} for peer hdlr: {:?}", last_aereq, peer.id);
-                        // connect to peer
-                        info!("PHDLR: DEBUG 887: connecting to: {}", ipaddr.clone());
+    //     debug!("PHDLR DEBUG 888 for peer: {}", peer.id);
+    //     if result.is_err() {
+    //         info!("PHDLR for peer {} ==> WARN: Unable to send message to peer {}", peer.id, peer);
+    //         return;
+    //     }
+    //     let _ = stream.flush();
+    //     debug!("PHDLR DEBUG 890 for peer: {}", peer.id);
+    //     // FIXME: this is a blocking call => how avoid an eternal wait?
 
-                        let aereqstr = json::Encoder::str_encode(&last_aereq);
-                        let mut stream = TcpStream::connect(addr.clone());
-                        // have to add the Length to the network message
-                        let result = stream.write_str(format!("Length: {:u}\n{:s}", aereqstr.len(), aereqstr));
+    //     // fn read(&mut self, buf: &mut [u8]) -> IoResult<uint>
+    //     // let mut buf: Vec<u8> = Vec::from_elem(1, 0u8);
+    //     // let response = stream.read(buf.as_mut_slice());
+    //     // TODO: currently responses do not have a length in the message => probably should?
+    //     // FIXME: this is a blocking call => how avoid an eternal wait?
+    //     let response = stream.read_to_str(); // this type of read is only safe if the other end closes the stream (EOF)
+    //     info!(">>===> PEER HDLR {} ==> PEER RESPONSE: {}", peer.id, response);
 
-                        debug!("PHDLR DEBUG 888 for peer: {}", peer.id);
-                        if result.is_err() {
-                            info!("PHDLR for peer {} ==> WARN: Unable to send message to peer {}", peer.id, peer);
-                            continue;
-                        }
-                        let _ = stream.flush();
-                        debug!("PHDLR DEBUG 890 for peer: {}", peer.id);
-                        // FIXME: this is a blocking call => how avoid an eternal wait?
+    //     match response {
+    //         Ok(aeresp_str) => {
+    //             let aeresp = append_entries::decode_append_entries_response(aeresp_str).
+    //                 ok().expect(format!("leader_peer_handler: decode aeresp failed for: {:?}", aeresp_str));
+    //             chsend.send(Ok(aeresp));
+    //         },
+    //         Err(e) => chsend.send(Err(e))
+    //     }
 
-                        // fn read(&mut self, buf: &mut [u8]) -> IoResult<uint>
-                        // let mut buf: Vec<u8> = Vec::from_elem(1, 0u8);
-                        // let response = stream.read(buf.as_mut_slice());
-                        // TODO: currently responses do not have a length in the message => probably should?
-                        let response = stream.read_to_str(); // this type of read is only safe if the other end closes the stream (EOF)
-                        info!(">>===> PEER HDLR {} ==> PEER RESPONSE: {}", peer.id, response);
-
-                        match response {
-                            Ok(aeresp_str) => {
-                                let aeresp = append_entries::decode_append_entries_response(aeresp_str).
-                                    ok().expect(format!("leader_peer_handler: decode aeresp failed for: {:?}", aeresp_str));
-                                chsend.send(Ok(aeresp));
-                            },
-                            Err(e) => chsend.send(Err(e))
-                        }
-
-                        drop(stream);  // TODO: probably unneccesary since goes out of scope
-                    }
-                }
-            );
-        }
-        info!("PEER HANDLER FOR {:?} SHUTTING DOWN", peer.id);
-    }
+    //     drop(stream);  // TODO: probably unneccesary since goes out of scope
+    //     info!("PEER HANDLER FOR {} SHUTTING DOWN", peer.id);
+    // }
 
 
     // TODO: what the hell is this state?  Got it from goraft => is it needed?
