@@ -288,12 +288,6 @@ impl Server {
             proc(id: uint) -> uint { id }
         });
 
-        // DEBUG
-        pool.execute(proc(id: &uint) {
-            debug!("executing task from pool: task {:u}", *id);
-        });
-        // END DEBUG
-
         let (chsend_response, chrecv_response): (Sender<IoResult<AppendEntriesResponse>>,
                                                  Receiver<IoResult<AppendEntriesResponse>>) = channel();
 
@@ -310,6 +304,9 @@ impl Server {
         }
 
         // now wait for network msgs (or timeout)
+        let mut timer = Timer::new().unwrap();
+        let heartbeat_timer = timer.periodic(self.heartbeat_interval);
+
         loop {
             info!("in leader loop for = {} :: waiting on self.p", self.id);
 
@@ -320,20 +317,15 @@ impl Server {
             // 2) AEResponse Receiver from peer handlers
 
             // TODO: change to select! macro (Note: hit problem doing that because event_recv is a borrowed ptr => get help from IRC)
-            let mut timer = Timer::new().unwrap();
-            // in this case the timer is for avoiding infinite waits on chrecv_response
-            // setting one timeout for the whole interaction with peers, not per interaction
-            let timeout = timer.oneshot(self.heartbeat_interval);
-            
             let select = Select::new();
             let mut nl_recvr = select.handle(event_recvr);
             let mut aeresp_recvr = select.handle(&chrecv_response);
-            let mut timeout = select.handle(&timeout);
-            
+            let mut heartbeat_timer = select.handle(&heartbeat_timer);
+
             unsafe {
                 nl_recvr.add();
                 aeresp_recvr.add();
-                timeout.add();
+                heartbeat_timer.add();
             }
             let ret = select.wait();
 
@@ -341,11 +333,11 @@ impl Server {
                 let resp = aeresp_recvr.recv();
                 self.ldr_process_aeresponse_from_peer(resp);
 
-            } else if ret == timeout.id() {
-                timeout.recv();
+            } else if ret == heartbeat_timer.id() {
+                heartbeat_timer.recv();
                 info!("LDR: HEARTBEAT TIMEOUT");
                 self.ldr_send_heartbeat(&mut pool, &chsend_response);
-                
+
             } else {
                 let ev = nl_recvr.recv();
                 debug!("follower: event message: {}", ev.msg);
@@ -398,7 +390,7 @@ impl Server {
                     info!("LDR: AEReq rejection: {:?}", aeresp);
                     self.peers.get_mut(peer_idx as uint).next_idx -= 1;  // back off to try again
                     // TODO: do something with peer.match_idx ?
-                    // TODO: send aereq here ? => where/how do we keep trying with this peer ?
+                    // TODO: send aereq here ? => where/how do we keep trying with this peer ? => log_repair work needed here
                 }
                 Some(aeresp)
             },
@@ -413,12 +405,12 @@ impl Server {
         aeresp.idx == self.log.idx + 1  // +1 bcs server doesn't log cmd until (majority-1) peers have
     }
 
-    fn ldr_send_heartbeat(&mut self, 
+    fn ldr_send_heartbeat(&mut self,
                           pool: &mut TaskPool<uint>,
                           chsend_response: &Sender<IoResult<AppendEntriesResponse>>) {
         info!("LDR: INFO 301: sending hearbeat via peer_handlers");
         let hearbeat_aereq = self.make_aereq(Vec::new());
-        
+
         for p in self.peers.iter() {
             let chsend_aeresp = chsend_response.clone();
             let peer = p.clone();
@@ -429,7 +421,7 @@ impl Server {
             });
         }
     }
-    
+
     fn ldr_process_cmd_from_client(&mut self, ev: &~Event,
                                    pool: &mut TaskPool<uint>,
                                    chsend_response: &Sender<IoResult<AppendEntriesResponse>>,
