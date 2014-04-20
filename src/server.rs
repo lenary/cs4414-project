@@ -1067,6 +1067,29 @@ mod test {
         entries
     }
 
+    fn send_aereq_heartbeat(stream: &mut IoResult<TcpStream>, term: u64,
+                            prev_log_idx: u64, prev_log_term: u64, commit_idx: u64) {
+
+        let aereq = ~AppendEntriesRequest{
+            term: term,
+            prev_log_idx: prev_log_idx,
+            prev_log_term: prev_log_term,
+            commit_idx: commit_idx,
+            leader_id: LEADER_ID,
+            entries: Vec::new(),
+        };
+
+        let json_aereq = json::Encoder::str_encode(aereq);
+        let req_msg = format!("Length: {:u}\n{:s}", json_aereq.len(), json_aereq);
+
+        let result = stream.write_str(req_msg);
+        if result.is_err() {
+            error!("Client ERROR: {:?}", result.err());
+        }
+        let _ = stream.flush();
+    }
+
+
     ///
     /// The number of entries in idx_vec and term_vec determines the # of logentries to send to
     /// the server. The len of the two vectors must be the same.
@@ -1719,7 +1742,7 @@ mod test {
     }
 
     #[test]
-    fn test_follower_with_same_AppendEntryRequest_twice_should_return_false_2nd_time() {
+    fn test_follower_where_one_entry_was_not_committed_on_leader_so_must_be_truncated() {
         setup();
         write_cfg_file(1);
 
@@ -1731,23 +1754,44 @@ mod test {
         timer::sleep(350); // wait a short while for the leader to get set up and listening on its socket
 
         let addr = start_result.unwrap();
-        let mut stream = TcpStream::connect(addr);
 
         // test case task acts as leader sending AEReq
 
-        /* ---[ send logentry1 (term1) ]--- */
+        /* ---[ send logentries 1 and 2 (term=1) ]--- */
 
-        let logentry1 = send_aereq1(&mut stream);
+        let mut stream = TcpStream::connect(addr);
+        let mut terms: Vec<u64> = vec!(1,1,1);
+        let mut indexes: Vec<u64> = vec!(1,2,3);
+        let prev_log_idx = 0u64;
+        let prev_log_term = 0u64;
+        let logentries123 = send_aereqs(&mut stream, indexes, terms, prev_log_idx, prev_log_term);
+
         let result1 = stream.read_to_str();
-        drop(stream); // close the connection
+        drop(stream);
 
 
-        /* ---[ send logentry1 again (term1) ]--- */
+        // now send hearbeat with prev_log_idx set to 2, meaning that idx 3 entry
+        // was NOT committed, so the follower needs to truncate this entry
+        let mut stream = TcpStream::connect(addr);
+        let term = 1u64;
+        let prev_log_idx = 2u64;
+        let prev_log_term = 1u64;
+        let commit_idx = 2u64;
+        send_aereq_heartbeat(&mut stream, term, prev_log_idx, prev_log_term, commit_idx);
 
-        stream = TcpStream::connect(addr);
-        let _ = send_aereq1(&mut stream);
         let result2 = stream.read_to_str();
-        drop(stream); // close the connection
+        drop(stream);
+
+        // send second heartbeat
+        let mut stream = TcpStream::connect(addr);
+        let term = 1u64;
+        let prev_log_idx = 2u64;
+        let prev_log_term = 1u64;
+        let commit_idx = 2u64;
+        send_aereq_heartbeat(&mut stream, term, prev_log_idx, prev_log_term, commit_idx);
+
+        let result3 = stream.read_to_str();
+        drop(stream);
 
         send_shutdown_signal(svr_id);
 
@@ -1758,28 +1802,38 @@ mod test {
         assert!(result1.is_ok());
         let resp = result1.unwrap();
 
-        assert!(resp.contains("\"success\":true"));
         let aeresp = append_entries::decode_append_entries_response(resp).unwrap();
-        assert_eq!(1, aeresp.term);
-        assert_eq!(1, aeresp.idx);
-        assert_eq!(1, aeresp.peer_id);
-        assert_eq!(super::UNKNOWN, aeresp.commit_idx);  // since no ldr has established any commits is UNKNOWN
         assert_eq!(true, aeresp.success);
+        assert_eq!(1, aeresp.term);
+        assert_eq!(3, aeresp.idx);
+        assert_eq!(1, aeresp.peer_id);
+        assert_eq!(1, aeresp.commit_idx);  // since no ldr has established any commits is UNKNOWN
 
 
-        // result 2 should be success = false
+        // result 2 should be success=false
 
         assert!(result2.is_ok());
         let resp2 = result2.unwrap();
 
-        assert!(resp2.contains("\"success\":false"));
-        let aeresp2 = append_entries::decode_append_entries_response(resp).unwrap();
+        let aeresp2 = append_entries::decode_append_entries_response(resp2).unwrap();
+        assert_eq!(false, aeresp2.success);
         assert_eq!(1, aeresp2.term);
-        assert_eq!(1, aeresp2.idx);
-        assert_eq!(1, aeresp.peer_id);
-        assert_eq!(super::UNKNOWN, aeresp.commit_idx);  // since no ldr has established any commits is UNKNOWN
-        assert_eq!(true, aeresp2.success);
+        assert_eq!(2, aeresp2.idx);        // this has dropped to 2
+        assert_eq!(1, aeresp2.peer_id);
+        assert_eq!(1, aeresp2.commit_idx);  // commit_idx doesn't get updated when response is false
 
+
+        // result 3 should be success=true
+
+        assert!(result3.is_ok());
+        let resp3 = result3.unwrap();
+
+        let aeresp3 = append_entries::decode_append_entries_response(resp3).unwrap();
+        assert_eq!(true, aeresp3.success);
+        assert_eq!(1, aeresp3.term);
+        assert_eq!(2, aeresp3.idx);
+        assert_eq!(1, aeresp3.peer_id);
+        assert_eq!(2, aeresp3.commit_idx);  // commit_idx should now be updated on success
 
         // validate that response was written to disk
         let filepath = Path::new(S1TEST_PATH);
@@ -1791,13 +1845,102 @@ mod test {
         assert!(readres.is_ok());
 
         let line = readres.unwrap().trim().to_owned();
-        let exp_str = json::Encoder::str_encode(&logentry1);
+        let exp_str = json::Encoder::str_encode(&logentries123.get(0));
         assert_eq!(exp_str, line);
 
-        // should only be one entry in the file
-        readres = br.read_line();
-        assert!(readres.is_err());
+        let mut readres = br.read_line();
+        assert!(readres.is_ok());
+
+        let line = readres.unwrap().trim().to_owned();
+        let exp_str = json::Encoder::str_encode(&logentries123.get(1));
+        assert_eq!(exp_str, line);
+
+        // should only be two entries in the file (not three)
+        assert!(br.read_line().is_err());
     }
+
+
+    // REMOVE ME !!!!!!!!!!!
+    // #[test]
+    // fn test_follower_with_same_AppendEntryRequest_twice_should_return_false_2nd_time() {
+    //     setup();
+    //     write_cfg_file(1);
+
+    //     let svr_id = 1;
+    //     let start_result = start_server(svr_id, None);
+    //     if start_result.is_err() {
+    //         fail!("{:?}", start_result);
+    //     }
+    //     timer::sleep(350); // wait a short while for the leader to get set up and listening on its socket
+
+    //     let addr = start_result.unwrap();
+    //     let mut stream = TcpStream::connect(addr);
+
+    //     // test case task acts as leader sending AEReq
+
+    //     /* ---[ send logentry1 (term1) ]--- */
+
+    //     let logentry1 = send_aereq1(&mut stream);
+    //     let result1 = stream.read_to_str();
+    //     drop(stream); // close the connection
+
+
+    //     /* ---[ send logentry1 again (term1) ]--- */
+
+    //     stream = TcpStream::connect(addr);
+    //     let _ = send_aereq1(&mut stream);
+    //     let result2 = stream.read_to_str();
+    //     drop(stream); // close the connection
+
+    //     send_shutdown_signal(svr_id);
+
+    //     /* ---[ validate results ]--- */
+
+    //     // validate response => result 1 should be success = true
+
+    //     assert!(result1.is_ok());
+    //     let resp = result1.unwrap();
+
+    //     assert!(resp.contains("\"success\":true"));
+    //     let aeresp = append_entries::decode_append_entries_response(resp).unwrap();
+    //     assert_eq!(1, aeresp.term);
+    //     assert_eq!(1, aeresp.idx);
+    //     assert_eq!(1, aeresp.peer_id);
+    //     assert_eq!(super::UNKNOWN, aeresp.commit_idx);  // since no ldr has established any commits is UNKNOWN
+    //     assert_eq!(true, aeresp.success);
+
+
+    //     // result 2 should be success = false
+
+    //     assert!(result2.is_ok());
+    //     let resp2 = result2.unwrap();
+
+    //     assert!(resp2.contains("\"success\":false"));
+    //     let aeresp2 = append_entries::decode_append_entries_response(resp).unwrap();
+    //     assert_eq!(1, aeresp2.term);
+    //     assert_eq!(1, aeresp2.idx);
+    //     assert_eq!(1, aeresp.peer_id);
+    //     assert_eq!(super::UNKNOWN, aeresp.commit_idx);  // since no ldr has established any commits is UNKNOWN
+    //     assert_eq!(true, aeresp2.success);
+
+
+    //     // validate that response was written to disk
+    //     let filepath = Path::new(S1TEST_PATH);
+    //     assert!(filepath.exists());
+
+    //     // read in first entry and make sure it matches the logentry sent in the AEReq
+    //     let mut br = BufferedReader::new(File::open(&filepath));
+    //     let mut readres = br.read_line();
+    //     assert!(readres.is_ok());
+
+    //     let line = readres.unwrap().trim().to_owned();
+    //     let exp_str = json::Encoder::str_encode(&logentry1);
+    //     assert_eq!(exp_str, line);
+
+    //     // should only be one entry in the file
+    //     readres = br.read_line();
+    //     assert!(readres.is_err());
+    // }
 
     #[test]
     fn test_follower_with_multiple_valid_AppendEntryRequests() {

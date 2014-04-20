@@ -58,6 +58,14 @@ impl Log {
     /// This method should only be called when the AER has log entries (not heartbeat)
     ///
     pub fn append_entries(&mut self, aereq: &AppendEntriesRequest) -> IoResult<()> {
+        if aereq.prev_log_idx < self.idx {
+            try!(self.truncate(aereq.prev_log_idx + 1));
+            return Err(IoError{kind: InvalidInput,
+                               desc: "prev_log_idx < self.log.idx mismatch",
+                               detail: Some(format!("aereq.prev_log_idx: {:u}; folower log idx {:u}",
+                                                    aereq.prev_log_idx, self.idx))});
+        }
+
         if aereq.prev_log_idx != self.idx {  // TODO: this may not be an error condition => need to research
             return Err(IoError{kind: InvalidInput,
                                desc: "prev_log_idx and log idx mismatch",
