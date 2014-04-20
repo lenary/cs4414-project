@@ -422,6 +422,9 @@ impl Server {
         }
     }
 
+    ///
+    /// TODO: DOCUMENT ME
+    ///
     fn ldr_process_cmd_from_client(&mut self, ev: &~Event,
                                    pool: &mut TaskPool<uint>,
                                    chsend_response: &Sender<IoResult<AppendEntriesResponse>>,
@@ -448,24 +451,39 @@ impl Server {
                 let majority_cutoff = self.peers.len() / 2;
                 let mut commits = 0;
                 let mut timer = Timer::new().unwrap();
-                // in this case the timer is for avoiding infinite waits on chrecv_response
+
+                // client_response_timer is for avoiding infinite waits on chrecv_response
                 // setting one timeout for the whole interaction with peers, not per interaction
-                let timeout = timer.oneshot(self.heartbeat_interval * 3); // FIXME: semi-arbitrary duration - what would be better?
+                let client_response_timeout = timer.oneshot(self.heartbeat_interval * 3); // FIXME: semi-arbitrary duration - what would be better?
+
+                // still have to handle heartbeats within the specified timeframe and since the client
+                // oneshot interaction may take many multiples of heartbeat_interval, we have to keep
+                // signaling while down in this inner loop of leader_loop
+                let mut timer = Timer::new().unwrap();
+                let heartbeat_timer = timer.periodic(self.heartbeat_interval);
+
                 loop {
                     let sel = Select::new();
                     let mut chrecv_response = sel.handle(chrecv_response);
-                    let mut timeout = sel.handle(&timeout);
+                    let mut client_response_timeout = sel.handle(&client_response_timeout);
+                    let mut heartbeat_timer = sel.handle(&heartbeat_timer);
                     unsafe{
                         chrecv_response.add();
-                        timeout.add();
+                        client_response_timeout.add();
+                        heartbeat_timer.add();
                     }
                     let ret = sel.wait();
 
-                    if ret == timeout.id() {
-                        timeout.recv();
+                    if ret == client_response_timeout.id() {
+                        client_response_timeout.recv();
                         info!("LDR: TIMEOUT while waiting for responses from peer handlers");
                         ev.ch.send(~"500 Server Error: unable to log command on leader");
                         break;
+
+                    } else if ret == heartbeat_timer.id() {
+                        heartbeat_timer.recv();
+                        info!("LDR: ldr_process_cmd_from_client HEARTBEAT TIMEOUT");
+                        self.ldr_send_heartbeat(pool, chsend_response);
 
                     } else {
                         let resp = chrecv_response.recv();
