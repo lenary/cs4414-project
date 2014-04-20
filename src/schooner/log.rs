@@ -12,6 +12,9 @@ use schooner::log_entry::LogEntry;
 use schooner::log_entry;
 
 ///
+/// Log maintains the current state of the log and has functionality associated with
+/// manipulating both the in-memory and on-disk version of the log.
+///
 /// The first valid term and idx is 1.
 /// A term or idx of 0 means "UKNOWN".
 ///
@@ -20,7 +23,7 @@ pub struct Log {
     pub path: Path,      // path to log
     pub idx: u64,        // idx  of last entry in the logs, may be ahead of from commit_idx
     pub term: u64,       // term of last entry in the logs
-    pub idx_term_hist: Vec<(u64, u64)>,  // in memory history of idx-term pairs in the logentries on file
+    pub logentries: Vec<LogEntry>,  // cache of all entries logged to file (TODO: future keep only last 100? 1000?)
 }
 
 impl Log {
@@ -46,10 +49,10 @@ impl Log {
             path: path,
             idx: start_idx,
             term: term,
-            idx_term_hist: Vec::with_capacity(4096),  // TODO: do we also need to cache include the client uuid ?
+            logentries: Vec::with_capacity(4096),
         };
 
-        return Ok(lg);
+        Ok(lg)
     }
 
     ///
@@ -66,12 +69,14 @@ impl Log {
                                                     aereq.prev_log_idx, self.idx))});
         }
 
-        if aereq.prev_log_idx != self.idx {  // TODO: this may not be an error condition => need to research
+        if aereq.prev_log_idx > self.idx {
             return Err(IoError{kind: InvalidInput,
-                               desc: "prev_log_idx and log idx mismatch",
-                               detail: Some(format!("log idx in follower is {:u}", self.idx))});
-
+                               desc: "prev_log_idx < self.log.idx mismatch",
+                               detail: Some(format!("aereq.prev_log_idx: {:u}; folower log idx {:u}",
+                                                    aereq.prev_log_idx, self.idx))});
         }
+
+        /////////////
         if aereq.prev_log_term != self.term && self.term != 0 {
             try!(self.truncate(aereq.prev_log_term));
             return Err(IoError{kind: InvalidInput,
@@ -112,7 +117,8 @@ impl Log {
 
         self.idx = entry.idx;
         self.term = entry.term;
-        self.idx_term_hist.push((entry.idx, entry.term));
+        self.logentries.push(entry.clone());
+        // self.logentries.push(LogEntry{idx: entry.idx, term: entry.term, data: entry.data.to_owned(), uuid: entry.uuid.to_owned()});
 
         Ok(())
     }
@@ -149,16 +155,20 @@ impl Log {
             }
         }
         // truncate in-memory term/idx vector
-        // NOTE: assumes we keep all log entries in place => otherwise have to offset by first idx entry in idx_term_hist
+        // NOTE: assumes we keep all log entries in place => otherwise have to offset by first idx entry in logentries
         // FIXME: dangerous => converting u64 to uint, so can only cache up to uint entries
-        self.idx_term_hist.truncate((entry_idx - 1) as uint);  // have to subtract bcs idx is 1-based, not 0-based
-        if self.idx_term_hist.len() == 0 {
+        let truncate_idx = (entry_idx - 1) as uint;  // have to subtract bcs idx is 1-based, not 0-based
+        if truncate_idx < self.logentries.len() {
+            self.logentries.truncate(truncate_idx);
+        }
+
+        if self.logentries.len() == 0 {
             self.idx = 0;
             self.term = 0;
         } else {
-            let (idx, trm) = *self.idx_term_hist.get(self.idx_term_hist.len() - 1);
-            self.idx = idx;
-            self.term = trm;
+            let last_entry = self.logentries.get(self.logentries.len() - 1);
+            self.idx = last_entry.idx;
+            self.term = last_entry.term;
         }
 
         // now rename/swap files
