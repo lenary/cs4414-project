@@ -65,9 +65,6 @@ pub struct Server {
     peers: Vec<Peer>,          // peer servers
     leader: int,               // "pointer" to peer that is current leader (idx into peers Vec)  // TODO: should this be &Peer?
 
-    // c: Sender<~Event>,  // TODO: keep chan/sender?
-    // p: Receiver<~Event>,
-
     heartbeat_interval: u64,
     election_timeout: u64,
     // TOOD: more later?
@@ -113,8 +110,15 @@ impl Server {
     /// - logpath: path to the event log for this server (and uniq to this server)
     ///
     pub fn new(id: uint, cfgpath: Path, logpath: Path) -> IoResult<~Server> {
-
-        let lg = try!(Log::new(logpath.clone()));
+        // DEBUG
+        let lp = logpath.clone();
+        debug!(" Server.new ==== does path exist1? : {:?}", lp.exists());
+        // END DEBUG
+        let lg = try!(Log::new(logpath));
+        // DEBUG
+        debug!(" Server.new ==== does path exist2? : {:?}", lp.exists());
+        // END DEBUG
+        debug!("Log constructed in server {}. Log => {}", id, lg);
         let peers: Vec<Peer> = try!(peer::parse_config(cfgpath.clone()));
         let myidx = get_peer_idx(&peers, id);
         if myidx == -1 {
@@ -140,8 +144,6 @@ impl Server {
             last_applied_commit: UNKNOWN,
             peers: other_peers,
             leader: UNKNOWN_LDR,
-            // c: ch,
-            // p: pt,
             heartbeat_interval: DEFAULT_HEARTBEAT_INTERVAL,  // TODO: need to parameterize
             election_timeout: DEFAULT_ELECTION_TIMEOUT,      // TODO: need to parameterize
         };
@@ -308,7 +310,7 @@ impl Server {
         let heartbeat_timer = timer.periodic(self.heartbeat_interval);
 
         loop {
-            info!("in leader loop for = {} :: waiting on self.p", self.id);
+            info!("in leader loop for = {} :: waiting in select", self.id);
 
             // select over
             // 1) network_listener receiver, which brings in:
@@ -565,7 +567,7 @@ impl Server {
 
         let ipaddr = format!("{}:{:u}", &peer.ip, peer.tcpport);
         let addr = from_str::<SocketAddr>(ipaddr).unwrap();
-        info!("PHDLR: DEBUG x887: connecting to: {}", ipaddr.clone());
+        info!("PHDLR: INFO x887: connecting to: {}", ipaddr.clone());
 
         let aereqstr = json::Encoder::str_encode(&aereq);
         let mut stream = TcpStream::connect(addr.clone());
@@ -722,11 +724,18 @@ fn get_leader_ptr(aereq: &AppendEntriesRequest, peers: &Vec<Peer>) -> int {
 fn create_client_msg(msg: &~str) -> Option<ClientMsg> {
     let parts: ~[&str] = msg.splitn('\n', 1).collect();
     if parts.len() != 2 {
+        error!("create_client_msg: Client messge did not have at least two lines: {}", msg);
         return None;
     }
+    let uuid_toks: ~[&str] = parts[0].splitn(':', 1).collect();
+    if uuid_toks.len() != 2 {
+        error!("create_client_msg: Client messge did not have `Uuid: xxx` as its first line: {}", msg);
+        return None;
+    }
+    let uuid = uuid_toks[1].trim().to_owned();
 
     Some(ClientMsg {
-        uuid: parts[0].trim().to_owned(),
+        uuid: uuid,
         cmd:  parts[1].trim().to_owned()
     })
 }
@@ -953,14 +962,12 @@ mod test {
                                     detail: Some(format!("Invalid server id: {}", id))})
         };
 
-        // TODO: these asserts and fails are dangerous -> if another server already started the test will hang
-        // TODO: probably need to return Result<~Server, Err> instead and let the test case handle errors
-        if logpath.exists() {
-            try!(fs::unlink(&logpath));
-        }
-        if ! dirpath.exists() {
-            try!(fs::mkdir(&dirpath, io::UserRWX));
-        }
+        // if logpath.exists() {
+        //     try!(fs::unlink(&logpath));
+        // }
+        // if ! dirpath.exists() {
+        //     try!(fs::mkdir(&dirpath, io::UserRWX));
+        // }
         let server = try!(Server::new(id, Path::new(TEST_CFG), logpath));
         Ok(server)
     }
@@ -1002,6 +1009,35 @@ mod test {
         timer::sleep(100);  // TODO: remove this ??
     }
 
+    ///
+    /// Params:
+    ///  - server_id: specifies which logpath file to write (datalog/S1TEST, etc.)
+    ///  - terms: list of terms specifies how many entries to write (idx 1 .. N) and the
+    ///           terms for each entry
+    ///
+    fn write_preexisting_log_entries(server_id: uint, terms: Vec<uint>) -> IoResult<()> {
+        let logpath = match server_id {
+            1 => Path::new(S1TEST_PATH),
+            2 => Path::new(S2TEST_PATH),
+            3 => Path::new(S3TEST_PATH),
+            4 => Path::new(S4TEST_PATH),
+            5 => Path::new(S5TEST_PATH),
+            _ => fail!("write_preexisting_log_entries: Unexpected server_id: {}", server_id)
+        };
+
+        let mut file = try!(File::open_mode(&logpath, Open, Write));
+
+        let mut idx = 1u64;
+        for term in terms.iter() {
+            let logentry = LogEntry{idx: idx, term: *term as u64, data: format!("PUT x = {}", idx), uuid: idx.to_str()};
+            let jstr = json::Encoder::str_encode(&logentry);
+            try!(file.write_line(jstr));
+
+            idx += 1;
+        }
+
+        Ok(())
+    }
 
     fn setup() {
         let mut filepath = Path::new(S1TEST_PATH);
@@ -1264,6 +1300,112 @@ mod test {
         // FILL IN
     }
 
+    // scenario 1:
+    //  terms between leader and follower match
+    //  follower idx is ahead of leader idx
+    //  follower should truncate log even after heartbeats only
+    #[test]
+    fn test_log_repair_scenario1() {
+        setup();
+        write_cfg_file(3);
+
+        let wres = write_preexisting_log_entries(1, vec!(1,1,1,2,2));  // leader's log
+        if wres.is_err() {
+            fail!("{:?}", wres);
+        }
+        let wres = write_preexisting_log_entries(2, vec!(1,1,1,2,2));
+        if wres.is_err() {
+            fail!("{:?}", wres);
+        }
+        let wres = write_preexisting_log_entries(3, vec!(1,1,1,2,2,2,2));  // server 3 has two entries more than leader (of same term)
+        if wres.is_err() {
+            fail!("{:?}", wres);
+        }
+
+        // start leader
+        let start_result1 = start_server(1, Some(CfgOptions{init_state: Leader}));
+        if start_result1.is_err() {
+            fail!("start_result1.is_err: {:?}", start_result1);
+        }
+        timer::sleep(20); // wait a short while for the leader to get set up and ready to msg followers
+
+        // start follower, svr 2
+        let start_result2 = start_server(2, None);
+        if start_result2.is_err() {
+            send_shutdown_signal(1);
+            fail!("start_result2.is_err: {:?}", start_result2);
+        }
+
+        // start follower, svr 3
+        let start_result3 = start_server(3, None);
+        if start_result3.is_err() {
+            send_shutdown_signal(1);
+            send_shutdown_signal(2);
+            fail!("send_result3.is_err: {:?}", start_result3);
+        }
+
+        timer::sleep(300); // wait a short while heartbeats to have propagated
+
+        let t1s1_datalog_res = read_datalog(S1TEST_PATH);
+        let t1s2_datalog_res = read_datalog(S2TEST_PATH);
+        let t1s3_datalog_res = read_datalog(S3TEST_PATH);  // should have been truncated to 5 entries
+
+        // now send another message just to test a new entry being sent out
+
+        let ldr_addr = start_result1.unwrap();
+
+        let mut stream = TcpStream::connect(ldr_addr);
+        let send_result1 = send_client_cmd(&mut stream, ~"PUT x=1");
+        if send_result1.is_err() {
+            send_shutdown_signal(1);
+            send_shutdown_signal(2);
+            fail!("send_result1.is_err: {:?}", send_result1);
+        }
+
+        let result1 = stream.read_to_str();
+        drop(stream); // close the connection
+
+        // long pause to ensure message is propagated
+        timer::sleep(150);
+
+        // read state of datalogs at t2
+        let t2s1_datalog_res = read_datalog(S1TEST_PATH);
+        let t2s2_datalog_res = read_datalog(S2TEST_PATH);
+        let t2s3_datalog_res = read_datalog(S3TEST_PATH);
+
+        spawn(proc() {
+            send_shutdown_signal(2);
+        });
+        spawn(proc() {
+            send_shutdown_signal(3);
+        });
+        send_shutdown_signal(1);
+
+        assert!(result1.is_ok());
+
+        assert!(t1s1_datalog_res.is_ok());
+        assert!(t1s2_datalog_res.is_ok());
+        assert!(t1s3_datalog_res.is_ok());
+
+        let t1s1_datalog = t1s1_datalog_res.unwrap();
+        let t1s2_datalog = t1s2_datalog_res.unwrap();
+        let t1s3_datalog = t1s3_datalog_res.unwrap();
+
+        assert_eq!(5, t1s1_datalog.len());
+        assert_eq!(5, t1s2_datalog.len());
+        assert_eq!(5, t1s3_datalog.len());
+
+        let t2s1_datalog = t2s1_datalog_res.unwrap();
+        let t2s2_datalog = t2s2_datalog_res.unwrap();
+        let t2s3_datalog = t2s3_datalog_res.unwrap();
+
+        assert_eq!(6, t2s1_datalog.len());
+        assert_eq!(6, t2s2_datalog.len());
+        assert_eq!(6, t2s3_datalog.len());
+
+
+        // TODO: validate that file contents are the same
+    }
 
     #[test]
     fn test_leader_with_4_followers_being_hit_by_multiple_clients_simultaneously() {

@@ -1,8 +1,10 @@
 extern crate rand;
 extern crate serialize;
 
-use std::io::{BufferedReader,BufferedWriter,File,IoResult,IoError,InvalidInput,EndOfFile,Append,Open,Read,Write};
+use std::io::{BufferedReader,BufferedWriter,File,IoResult,IoError,InvalidInput,Append,Open,Read,Write};
 use std::io::fs;
+use std::fmt;
+use std::fmt::Show;
 use std::vec::Vec;
 
 use serialize::json;
@@ -26,33 +28,39 @@ pub struct Log {
     pub logentries: Vec<LogEntry>,  // cache of all entries logged to file (TODO: future keep only last 100? 1000?)
 }
 
+impl Show for Log {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f.buf, "Log: path: {}; idx: {}; term: {}: logentries-length: {}",
+               self.path.display().to_str(), self.idx, self.term, self.logentries.len())
+    }
+}
+
 impl Log {
     pub fn new(path: Path) -> IoResult<~Log> {
-        let mut start_idx = 0;
+        let mut last_idx = 0;
         let mut term = 0;
-        if path.exists() {
-            let last_entry = try!(read_last_entry(&path));
-            match log_entry::decode_log_entry(last_entry) {
-                Ok(logentry) => {
-                    start_idx = logentry.idx;
-                    term = logentry.term;
-                },
-                Err(_) => ()
-            }
+        let logentries = if path.exists() {
+            try!(read_entries_from_disk(&path))
+        } else {
+            Vec::with_capacity(4096)
+        };
+
+        if logentries.len() > 0 {
+            let lastentry = logentries.get(logentries.len() - 1);
+            last_idx = lastentry.idx;
+            term = lastentry.term;
         }
 
         // TODO: will need a log rotation strategy later
         let file = try!(File::open_mode(&path, Append, Write));
 
-        let lg = ~Log {
-            file: file,
-            path: path,
-            idx: start_idx,
-            term: term,
-            logentries: Vec::with_capacity(4096),
-        };
-
-        Ok(lg)
+        Ok(~Log {
+             file: file,
+             path: path,
+             idx: last_idx,
+             term: term,
+             logentries: logentries
+        })
     }
 
     ///
@@ -118,7 +126,6 @@ impl Log {
         self.idx = entry.idx;
         self.term = entry.term;
         self.logentries.push(entry.clone());
-        // self.logentries.push(LogEntry{idx: entry.idx, term: entry.term, data: entry.data.to_owned(), uuid: entry.uuid.to_owned()});
 
         Ok(())
     }
@@ -181,19 +188,27 @@ impl Log {
     }
 }
 
-fn read_last_entry(path: &Path) -> IoResult<~str> {
+fn read_entries_from_disk(path: &Path) -> IoResult<Vec<LogEntry>> {
     let file = try!(File::open(path));
     let mut br = BufferedReader::new(file);
 
-    let mut last_line: ~str = ~"";
-    loop {
-        match br.read_line() {
-            Ok(ln) => last_line = ln,
-            Err(ref e) if e.kind == EndOfFile => break,
-            Err(e) => return Err(e)
+    let mut entries: Vec<LogEntry> = Vec::with_capacity(4096);
+    for ln in br.lines() {
+        match ln {
+            Ok(line) => {
+                match log_entry::decode_log_entry(line) {
+                    Ok(logentry) => entries.push(logentry),
+                    Err(e) => return Err(IoError{kind: InvalidInput,
+                                                 desc: "log.read_entries_from_disk: Logentry parsing error",
+                                                 detail: Some(format!("{:?}",e))})
+                }
+            },
+            Err(e) => return Err(IoError{kind: InvalidInput,
+                                         desc: "log.read_entries_from_disk: log file read error",
+                                         detail: Some(format!("path: {}. Error: {:?}", path.display().to_str(), e))})
         }
     }
-    Ok(last_line)
+    Ok(entries)
 }
 
 
@@ -223,7 +238,7 @@ mod test {
         count
     }
 
-    #[test]
+    //#[test]
     fn test_truncate() {
         cleanup();
         // need to write some logs first
