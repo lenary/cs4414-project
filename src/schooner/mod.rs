@@ -11,13 +11,16 @@ extern crate uuid;
 use std::comm::Select;
 // use std::comm::{Empty, Data, Disconnected};
 use std::{cmp,str};
-use std::io::{Acceptor,BufferedReader,InvalidInput,IoError,IoResult,Listener,Timer};
+use std::vec::Vec;
+use std::io::Timer;
+
+// TODO: None of this should be in this module. It should go into net
+// (I believe they are all to do with communicating with Peers)
+use std::io::{Acceptor,BufferedReader,InvalidInput,IoError,IoResult,Listener};
 use std::io::net::ip::SocketAddr;
 use std::io::net::tcp::{TcpListener,TcpStream};
-use std::vec::Vec;
-
-use rand::{task_rng, Rng};
 use serialize::json;
+use rand::{task_rng,Rng};
 use sync::TaskPool;
 
 use self::events::*;
@@ -25,17 +28,17 @@ use self::consistent_log::{Log,LogEntry};
 use self::net::*;
 use self::append_entries::{AppendEntriesRequest,AppendEntriesResponse};
 
-pub mod events;
-pub mod consistent_log;
-pub mod net;
+mod events;
+mod consistent_log;
+mod net;
 
 mod traits;
-pub mod leader;
-pub mod candidate;
-pub mod follower;
+mod leader;
+mod candidate;
+mod follower;
 
 // TODO: find a better place for this
-pub mod append_entries;
+mod append_entries;
 
 pub static DEFAULT_HEARTBEAT_INTERVAL: u64 =  50; // millis
 pub static DEFAULT_ELECTION_TIMEOUT  : u64 = 150; // millis
@@ -44,7 +47,8 @@ pub static DEFAULT_ELECTION_TIMEOUT  : u64 = 150; // millis
 fn main() {
 }
 
-// TODO: a trait for the Application's State Machine
+// TODO: a trait for the Application's State Machine. See also
+// ApplicationReq/Res and HandoffReq/Res
 
 // where could this go?
 static STOP_MSG: &'static str = "STOP";

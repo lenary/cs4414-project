@@ -8,4 +8,4 @@ pub struct Follower {
 }
 
 // TODO: Fill this out with real implementations
-impl RaftState for Candidate { }
+impl RaftState for Follower { }
