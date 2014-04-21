@@ -4,6 +4,7 @@ use std::vec::Vec;
 pub use self::peer::{Peer,parse_config};
 
 pub mod peer;
+pub mod messages;
 pub mod handlers;
 
 // TODO: put entry functions in here, like:
