@@ -1,4 +1,6 @@
-#![feature(phase)]
+#![feature(phase,globs)]
+
+
 #[phase(syntax, link)]
 extern crate log;
 extern crate rand;
@@ -18,14 +20,16 @@ use rand::{task_rng, Rng};
 use serialize::json;
 use sync::TaskPool;
 
+use self::events::*;
 use self::consistent_log::{Log,LogEntry};
-use self::net::peer;
-use self::net::peer::Peer;
+use self::net::*;
 use self::append_entries::{AppendEntriesRequest,AppendEntriesResponse};
 
+pub mod events;
 pub mod consistent_log;
 pub mod net;
 
+mod traits;
 pub mod leader;
 pub mod candidate;
 pub mod follower;
@@ -93,6 +97,7 @@ pub struct Server {
     // TOOD: more later?
 }
 
+/// Deprecated in favour of RaftEvents above
 ///
 /// Events are used to pass incoming network messages from the network_listener
 /// task to the server_loop task
@@ -135,7 +140,7 @@ impl Server {
     pub fn new(id: uint, cfgpath: Path, logpath: Path) -> IoResult<~Server> {
 
         let lg = try!(Log::new(logpath.clone()));
-        let peers: Vec<Peer> = try!(peer::parse_config(cfgpath.clone()));
+        let peers: Vec<Peer> = try!(parse_config(cfgpath.clone()));
         let myidx = get_peer_idx(&peers, id);
         if myidx == -1 {
             fail!("Server::new: Id {} is not in the config file {}", id, cfgpath.display());
