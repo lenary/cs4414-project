@@ -10,9 +10,11 @@ use super::events::*;
 // If they want to just continue in the same state, return None;
 pub trait RaftState {
 
-    fn setup_loop(&mut self) -> Option<~RaftState> {
+    fn handle_setup(&mut self) -> Option<~RaftState> {
         None
     }
+
+    fn handle_teardown(&mut self) { }
 
 
     fn handle_timeout(&mut self) -> Option<~RaftState> {
