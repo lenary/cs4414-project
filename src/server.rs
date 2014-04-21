@@ -292,7 +292,7 @@ impl Server {
                                                  Receiver<IoResult<AppendEntriesResponse>>) = channel();
 
         // execute the peer handler tasks for the first heartbeat
-        let first_heartbeat_msg = self.make_aereq(Vec::new());
+        let first_heartbeat_msg = self.make_aereq_from_client_msg(Vec::new());
         for p in self.peers.iter() {
             let chsend_aeresp = chsend_response.clone();
             let peer = p.clone();
@@ -331,7 +331,7 @@ impl Server {
 
             if ret == aeresp_recvr.id() {
                 let resp = aeresp_recvr.recv();
-                self.ldr_process_aeresponse_from_peer(resp);
+                self.ldr_process_aeresponse_from_peer(resp, &mut pool, &chsend_response);
 
             } else if ret == heartbeat_timer.id() {
                 heartbeat_timer.recv();
@@ -372,23 +372,62 @@ impl Server {
     /// TODO: DOCUMENT ME
     /// Returns Some(AppendEntriesResponse) if the IoResult was not an error, otherwise returns None
     ///
-    fn ldr_process_aeresponse_from_peer(&mut self, resp: IoResult<AppendEntriesResponse>) -> Option<AppendEntriesResponse> {
+    fn ldr_process_aeresponse_from_peer(&mut self, resp: IoResult<AppendEntriesResponse>,
+                                        pool: &mut TaskPool<uint>,
+                                        chsend_response: &Sender<IoResult<AppendEntriesResponse>>) -> Option<AppendEntriesResponse> {
         match resp {
             Ok(aeresp) => {
                 let peer_idx = get_peer_idx(&self.peers, aeresp.peer_id);
                 assert!(peer_idx != -1);
+                let peer_idx = peer_idx as uint;
 
                 // if get here an AEResponse was returned, but the peer may have
                 // rejected the AERequest, so check the success flag in the AEResponse
                 if aeresp.success {
-                    // TODO: may need to increment by more than 1 => how determine what to set it to?
-                    //       >>> probably should be aeresp.idx + 1
-                    self.peers.get_mut(peer_idx as uint).next_idx += 1;
+                    // TODO: should we check that the aeresp is sane (i.e., not larger than self.log.idx?)
+                    self.peers.get_mut(peer_idx).next_idx = aeresp.idx + 1;
 
                 } else {
-                    // TODO: handle rejection scenario => log repair scenario => put in separate method
+                    // AEResponse#success=false rejection scenario
                     info!("LDR: AEReq rejection: {:?}", aeresp);
-                    self.peers.get_mut(peer_idx as uint).next_idx -= 1;  // back off to try again
+
+                    // interpretation of scenarios
+                    // if terms match:
+                    //   if peer_next_idx == self.log.idx + 1: follower has truncated logs and all now matches
+                    //   if peer_next_idx  < self.log.idx + 1: follower is behind => send missing AEReqs
+                    //   if peer_next_idx  > self.log.idx + 1: code logic error, follower should have truncated its logs
+                    match (aeresp.term == self.log.term, aeresp.idx == self.log.idx) {
+                        (true, true)   => {
+                            debug!("LDR: AEResponse rejection SCENARIO 1: {:?}", aeresp);
+                            // log repair scenario 1:
+                            // peer idx was *ahead of* leader prev_log_idx and truncated its results back leader
+                            self.peers.get_mut(peer_idx).next_idx = aeresp.idx + 1;
+                        },
+                        (true, false)  => {
+                            debug!("LDR: AEResponse rejection SCENARIO 2: {:?}", aeresp);
+                            // log repair scenario 2:
+                            // peer idx was *behind* leader prev_log_idx and needs to catch up
+
+                            if aeresp.idx > self.log.idx {
+                                fail!("server.ldr_process_aeresponse_from_peer: peer <{}> has aeresp.idx > self.log.idx; {}",
+                                      self.peers.get(peer_idx).id, "ERROR: should have truncated logs")
+                            }
+
+                            let peer_next_idx = aeresp.idx + 1;
+                            self.peers.get_mut(peer_idx).next_idx = peer_next_idx;
+                            let chsend_aeresp = chsend_response.clone();
+
+                            let aereq = self.make_aereq_from_log(peer_next_idx);
+                            let peer_copy = self.peers.get_mut(peer_idx).clone();
+                            pool.execute(proc(_: &uint) {
+                                Server::leader_peer_handler(peer_copy, chsend_aeresp, aereq);
+                            });
+                        },
+                        (false, true)  => {},
+                        (false, false) => {},
+                    }
+
+                    self.peers.get_mut(peer_idx).next_idx -= 1;  // back off to try again
                     // TODO: do something with peer.match_idx ?
                     // TODO: send aereq here ? => where/how do we keep trying with this peer ? => log_repair work needed here
                 }
@@ -409,7 +448,7 @@ impl Server {
                           pool: &mut TaskPool<uint>,
                           chsend_response: &Sender<IoResult<AppendEntriesResponse>>) {
         info!("LDR: INFO 301: sending hearbeat via peer_handlers");
-        let hearbeat_aereq = self.make_aereq(Vec::new());
+        let hearbeat_aereq = self.make_aereq_from_client_msg(Vec::new());
 
         for p in self.peers.iter() {
             let chsend_aeresp = chsend_response.clone();
@@ -433,7 +472,7 @@ impl Server {
         match create_client_msg(&ev.msg) {
             None            => ev.ch.send(~"400 Bad Request"),
             Some(clientMsg) => {
-                let aereq = self.make_aereq(vec!(clientMsg));
+                let aereq = self.make_aereq_from_client_msg(vec!(clientMsg));
 
                 // first send this message to the peer-handlers
                 // without logging to own log
@@ -487,7 +526,7 @@ impl Server {
 
                     } else {
                         let resp = chrecv_response.recv();
-                        match self.ldr_process_aeresponse_from_peer(resp) {
+                        match self.ldr_process_aeresponse_from_peer(resp, pool, chsend_response) {
                             None => (),
                             Some(aeresp) => {
                                 if aeresp.success && self.response_is_for_current_client_cmd(&aeresp) {
@@ -563,69 +602,32 @@ impl Server {
         info!("PEER HANDLER FOR {} SHUTTING DOWN", peer.id);
     }
 
-    // TODO: this may need to go into its own file
-    ///
-    /// Runs in its own task and handles all leader->follower messaging to the specified Peer
-    /// Params:
-    /// - peer: Peer this handler makes network connections to
-    /// - chrecv: Receiver channel that leader loop sends AEReq or STOP message on
-    /// - chsend: Sender channel for this handler to message back to leader_loop with the
-    ///           response from the peer
-    ///
-    // fn leader_peer_handler(peer: Peer, heartbeat_interval: u64,
-    //                        chrecv: Receiver<Option<AppendEntriesRequest>>,
-    //                        chsend: Sender<IoResult<AppendEntriesResponse>>) {
-    //     info!("LEADER PEER_HANDLER for peer {:?}", peer.id);
 
-    //     let ipaddr = format!("{}:{:u}", &peer.ip, peer.tcpport);
-    //     let addr = from_str::<SocketAddr>(ipaddr).unwrap();
-
-    //     let aereq = chrecv.recv();
-    //     // is client cmd
-    //     info!("RECEIVED CLIENT CMD {:?} for peer hdlr: {:?}", aereq, peer.id);
-    //     // connect to peer
-    //     info!("PHDLR: DEBUG 887: connecting to: {}", ipaddr.clone());
-
-    //     let aereqstr = json::Encoder::str_encode(&aereq);
-    //     let mut stream = TcpStream::connect(addr.clone());
-    //     // have to add the Length to the network message
-    //     let result = stream.write_str(format!("Length: {:u}\n{:s}", aereqstr.len(), aereqstr));
-
-    //     debug!("PHDLR DEBUG 888 for peer: {}", peer.id);
-    //     if result.is_err() {
-    //         info!("PHDLR for peer {} ==> WARN: Unable to send message to peer {}", peer.id, peer);
-    //         return;
-    //     }
-    //     let _ = stream.flush();
-    //     debug!("PHDLR DEBUG 890 for peer: {}", peer.id);
-    //     // FIXME: this is a blocking call => how avoid an eternal wait?
-
-    //     // fn read(&mut self, buf: &mut [u8]) -> IoResult<uint>
-    //     // let mut buf: Vec<u8> = Vec::from_elem(1, 0u8);
-    //     // let response = stream.read(buf.as_mut_slice());
-    //     // TODO: currently responses do not have a length in the message => probably should?
-    //     // FIXME: this is a blocking call => how avoid an eternal wait?
-    //     let response = stream.read_to_str(); // this type of read is only safe if the other end closes the stream (EOF)
-    //     info!(">>===> PEER HDLR {} ==> PEER RESPONSE: {}", peer.id, response);
-
-    //     match response {
-    //         Ok(aeresp_str) => {
-    //             let aeresp = append_entries::decode_append_entries_response(aeresp_str).
-    //                 ok().expect(format!("leader_peer_handler: decode aeresp failed for: {:?}", aeresp_str));
-    //             chsend.send(Ok(aeresp));
-    //         },
-    //         Err(e) => chsend.send(Err(e))
-    //     }
-
-    //     drop(stream);  // TODO: probably unneccesary since goes out of scope
-    //     info!("PEER HANDLER FOR {} SHUTTING DOWN", peer.id);
-    // }
-
-
-    // TODO: what the hell is this state?  Got it from goraft => is it needed?
+    // TODO: what is this state?  Got it from goraft => is it needed?
     fn snapshotting_loop(&mut self) {
         info!("snapshotting loop");
         self.state = Follower;
+    }
+
+    ///
+    /// Crates an AERequest with already logged entries starting from `logidx`
+    /// in the Log cache.
+    ///
+    fn make_aereq_from_log(&mut self, logidx: u64) -> AppendEntriesRequest {
+        // let mut entries: Vec<LogEntry> = Vec::with_capacity((self.log.idx - logidx) as uint);
+
+        // FIXME: dangerous => converting from u64 to uint, so in effect can't cache
+        //        more then uint-max in memory
+        let entries = Vec::from_slice(self.log.logentries.slice_from(logidx as uint));
+
+        AppendEntriesRequest {
+            term: self.log.term,
+            prev_log_idx: self.log.idx,
+            prev_log_term: self.log.term,
+            commit_idx: self.commit_idx,
+            leader_id: self.id,
+            entries: entries,
+        }
     }
 
     ///
@@ -633,7 +635,7 @@ impl Server {
     /// Called by Leader to send AEReqs to followers.
     /// To send a heartbeat message, pass in an empty vector.
     ///
-    fn make_aereq(&mut self, entry_msgs: Vec<ClientMsg>) -> AppendEntriesRequest {
+    fn make_aereq_from_client_msg(&mut self, entry_msgs: Vec<ClientMsg>) -> AppendEntriesRequest {
         let mut entries: Vec<LogEntry> = Vec::with_capacity(entry_msgs.len());
         let mut count = 0u64;
         for cmsg in entry_msgs.move_iter() {
@@ -1067,6 +1069,29 @@ mod test {
         entries
     }
 
+    fn send_aereq_heartbeat(stream: &mut IoResult<TcpStream>, term: u64,
+                            prev_log_idx: u64, prev_log_term: u64, commit_idx: u64) {
+
+        let aereq = ~AppendEntriesRequest{
+            term: term,
+            prev_log_idx: prev_log_idx,
+            prev_log_term: prev_log_term,
+            commit_idx: commit_idx,
+            leader_id: LEADER_ID,
+            entries: Vec::new(),
+        };
+
+        let json_aereq = json::Encoder::str_encode(aereq);
+        let req_msg = format!("Length: {:u}\n{:s}", json_aereq.len(), json_aereq);
+
+        let result = stream.write_str(req_msg);
+        if result.is_err() {
+            error!("Client ERROR: {:?}", result.err());
+        }
+        let _ = stream.flush();
+    }
+
+
     ///
     /// The number of entries in idx_vec and term_vec determines the # of logentries to send to
     /// the server. The len of the two vectors must be the same.
@@ -1333,11 +1358,8 @@ mod test {
         let clt4_result = chrecv4.recv();
         let clt5_result = chrecv5.recv();
 
-        timer::sleep(300); // wait a short while for all messages to get handled
+        timer::sleep(500); // wait a short while for all messages to get handled
 
-        spawn(proc() {
-            send_shutdown_signal(1);
-        });
         spawn(proc() {
             send_shutdown_signal(2);
         });
@@ -1347,7 +1369,10 @@ mod test {
         spawn(proc() {
             send_shutdown_signal(4);
         });
-        send_shutdown_signal(5);
+        spawn(proc() {
+            send_shutdown_signal(5);
+        });
+        send_shutdown_signal(1);
 
         assert!(clt1_result.is_ok());
         assert!(clt2_result.is_ok());
@@ -1719,7 +1744,7 @@ mod test {
     }
 
     #[test]
-    fn test_follower_with_same_AppendEntryRequest_twice_should_return_false_2nd_time() {
+    fn test_follower_where_one_entry_was_not_committed_on_leader_so_must_be_truncated() {
         setup();
         write_cfg_file(1);
 
@@ -1731,23 +1756,44 @@ mod test {
         timer::sleep(350); // wait a short while for the leader to get set up and listening on its socket
 
         let addr = start_result.unwrap();
-        let mut stream = TcpStream::connect(addr);
 
         // test case task acts as leader sending AEReq
 
-        /* ---[ send logentry1 (term1) ]--- */
+        /* ---[ send logentries 1 and 2 (term=1) ]--- */
 
-        let logentry1 = send_aereq1(&mut stream);
+        let mut stream = TcpStream::connect(addr);
+        let terms: Vec<u64> = vec!(1,1,1);
+        let indexes: Vec<u64> = vec!(1,2,3);
+        let prev_log_idx = 0u64;
+        let prev_log_term = 0u64;
+        let logentries123 = send_aereqs(&mut stream, indexes, terms, prev_log_idx, prev_log_term);
+
         let result1 = stream.read_to_str();
-        drop(stream); // close the connection
+        drop(stream);
 
 
-        /* ---[ send logentry1 again (term1) ]--- */
+        // now send hearbeat with prev_log_idx set to 2, meaning that idx 3 entry
+        // was NOT committed, so the follower needs to truncate this entry
+        let mut stream = TcpStream::connect(addr);
+        let term = 1u64;
+        let prev_log_idx = 2u64;
+        let prev_log_term = 1u64;
+        let commit_idx = 2u64;
+        send_aereq_heartbeat(&mut stream, term, prev_log_idx, prev_log_term, commit_idx);
 
-        stream = TcpStream::connect(addr);
-        let _ = send_aereq1(&mut stream);
         let result2 = stream.read_to_str();
-        drop(stream); // close the connection
+        drop(stream);
+
+        // send second heartbeat
+        let mut stream = TcpStream::connect(addr);
+        let term = 1u64;
+        let prev_log_idx = 2u64;
+        let prev_log_term = 1u64;
+        let commit_idx = 2u64;
+        send_aereq_heartbeat(&mut stream, term, prev_log_idx, prev_log_term, commit_idx);
+
+        let result3 = stream.read_to_str();
+        drop(stream);
 
         send_shutdown_signal(svr_id);
 
@@ -1758,28 +1804,38 @@ mod test {
         assert!(result1.is_ok());
         let resp = result1.unwrap();
 
-        assert!(resp.contains("\"success\":true"));
         let aeresp = append_entries::decode_append_entries_response(resp).unwrap();
-        assert_eq!(1, aeresp.term);
-        assert_eq!(1, aeresp.idx);
-        assert_eq!(1, aeresp.peer_id);
-        assert_eq!(super::UNKNOWN, aeresp.commit_idx);  // since no ldr has established any commits is UNKNOWN
         assert_eq!(true, aeresp.success);
+        assert_eq!(1, aeresp.term);
+        assert_eq!(3, aeresp.idx);
+        assert_eq!(1, aeresp.peer_id);
+        assert_eq!(1, aeresp.commit_idx);  // since no ldr has established any commits is UNKNOWN
 
 
-        // result 2 should be success = false
+        // result 2 should be success=false
 
         assert!(result2.is_ok());
         let resp2 = result2.unwrap();
 
-        assert!(resp2.contains("\"success\":false"));
-        let aeresp2 = append_entries::decode_append_entries_response(resp).unwrap();
+        let aeresp2 = append_entries::decode_append_entries_response(resp2).unwrap();
+        assert_eq!(false, aeresp2.success);
         assert_eq!(1, aeresp2.term);
-        assert_eq!(1, aeresp2.idx);
-        assert_eq!(1, aeresp.peer_id);
-        assert_eq!(super::UNKNOWN, aeresp.commit_idx);  // since no ldr has established any commits is UNKNOWN
-        assert_eq!(true, aeresp2.success);
+        assert_eq!(2, aeresp2.idx);        // this has dropped to 2
+        assert_eq!(1, aeresp2.peer_id);
+        assert_eq!(1, aeresp2.commit_idx);  // commit_idx doesn't get updated when response is false
 
+
+        // result 3 should be success=true
+
+        assert!(result3.is_ok());
+        let resp3 = result3.unwrap();
+
+        let aeresp3 = append_entries::decode_append_entries_response(resp3).unwrap();
+        assert_eq!(true, aeresp3.success);
+        assert_eq!(1, aeresp3.term);
+        assert_eq!(2, aeresp3.idx);
+        assert_eq!(1, aeresp3.peer_id);
+        assert_eq!(2, aeresp3.commit_idx);  // commit_idx should now be updated on success
 
         // validate that response was written to disk
         let filepath = Path::new(S1TEST_PATH);
@@ -1787,17 +1843,106 @@ mod test {
 
         // read in first entry and make sure it matches the logentry sent in the AEReq
         let mut br = BufferedReader::new(File::open(&filepath));
-        let mut readres = br.read_line();
+        let readres = br.read_line();
         assert!(readres.is_ok());
 
         let line = readres.unwrap().trim().to_owned();
-        let exp_str = json::Encoder::str_encode(&logentry1);
+        let exp_str = json::Encoder::str_encode(&logentries123.get(0));
         assert_eq!(exp_str, line);
 
-        // should only be one entry in the file
-        readres = br.read_line();
-        assert!(readres.is_err());
+        let readres = br.read_line();
+        assert!(readres.is_ok());
+
+        let line = readres.unwrap().trim().to_owned();
+        let exp_str = json::Encoder::str_encode(&logentries123.get(1));
+        assert_eq!(exp_str, line);
+
+        // should only be two entries in the file (not three)
+        assert!(br.read_line().is_err());
     }
+
+
+    // REMOVE ME !!!!!!!!!!!
+    // #[test]
+    // fn test_follower_with_same_AppendEntryRequest_twice_should_return_false_2nd_time() {
+    //     setup();
+    //     write_cfg_file(1);
+
+    //     let svr_id = 1;
+    //     let start_result = start_server(svr_id, None);
+    //     if start_result.is_err() {
+    //         fail!("{:?}", start_result);
+    //     }
+    //     timer::sleep(350); // wait a short while for the leader to get set up and listening on its socket
+
+    //     let addr = start_result.unwrap();
+    //     let mut stream = TcpStream::connect(addr);
+
+    //     // test case task acts as leader sending AEReq
+
+    //     /* ---[ send logentry1 (term1) ]--- */
+
+    //     let logentry1 = send_aereq1(&mut stream);
+    //     let result1 = stream.read_to_str();
+    //     drop(stream); // close the connection
+
+
+    //     /* ---[ send logentry1 again (term1) ]--- */
+
+    //     stream = TcpStream::connect(addr);
+    //     let _ = send_aereq1(&mut stream);
+    //     let result2 = stream.read_to_str();
+    //     drop(stream); // close the connection
+
+    //     send_shutdown_signal(svr_id);
+
+    //     /* ---[ validate results ]--- */
+
+    //     // validate response => result 1 should be success = true
+
+    //     assert!(result1.is_ok());
+    //     let resp = result1.unwrap();
+
+    //     assert!(resp.contains("\"success\":true"));
+    //     let aeresp = append_entries::decode_append_entries_response(resp).unwrap();
+    //     assert_eq!(1, aeresp.term);
+    //     assert_eq!(1, aeresp.idx);
+    //     assert_eq!(1, aeresp.peer_id);
+    //     assert_eq!(super::UNKNOWN, aeresp.commit_idx);  // since no ldr has established any commits is UNKNOWN
+    //     assert_eq!(true, aeresp.success);
+
+
+    //     // result 2 should be success = false
+
+    //     assert!(result2.is_ok());
+    //     let resp2 = result2.unwrap();
+
+    //     assert!(resp2.contains("\"success\":false"));
+    //     let aeresp2 = append_entries::decode_append_entries_response(resp).unwrap();
+    //     assert_eq!(1, aeresp2.term);
+    //     assert_eq!(1, aeresp2.idx);
+    //     assert_eq!(1, aeresp.peer_id);
+    //     assert_eq!(super::UNKNOWN, aeresp.commit_idx);  // since no ldr has established any commits is UNKNOWN
+    //     assert_eq!(true, aeresp2.success);
+
+
+    //     // validate that response was written to disk
+    //     let filepath = Path::new(S1TEST_PATH);
+    //     assert!(filepath.exists());
+
+    //     // read in first entry and make sure it matches the logentry sent in the AEReq
+    //     let mut br = BufferedReader::new(File::open(&filepath));
+    //     let mut readres = br.read_line();
+    //     assert!(readres.is_ok());
+
+    //     let line = readres.unwrap().trim().to_owned();
+    //     let exp_str = json::Encoder::str_encode(&logentry1);
+    //     assert_eq!(exp_str, line);
+
+    //     // should only be one entry in the file
+    //     readres = br.read_line();
+    //     assert!(readres.is_err());
+    // }
 
     #[test]
     fn test_follower_with_multiple_valid_AppendEntryRequests() {
