@@ -5,11 +5,10 @@ use std::io::{BufferedReader,BufferedWriter,File,IoResult,IoError,InvalidInput,E
 use std::io::fs;
 use std::vec::Vec;
 
-use serialize::json;
+use serialize::{json, Decodable};
 
-use schooner::append_entries::AppendEntriesRequest;
-use schooner::log_entry::LogEntry;
-use schooner::log_entry;
+use super::append_entries::AppendEntriesRequest;
+
 
 ///
 /// Log maintains the current state of the log and has functionality associated with
@@ -26,13 +25,21 @@ pub struct Log {
     pub logentries: Vec<LogEntry>,  // cache of all entries logged to file (TODO: future keep only last 100? 1000?)
 }
 
+#[deriving(Decodable, Encodable, Clone, Show)]
+pub struct LogEntry {
+    pub idx:  u64,  // raft idx in log
+    pub term: u64,  // raft term in log
+    pub data: ~str, // data or "command" to log
+    pub uuid: ~str, // unique id from client, recommended (but not reqd) to be of UUID format
+}
+
 impl Log {
     pub fn new(path: Path) -> IoResult<~Log> {
         let mut start_idx = 0;
         let mut term = 0;
         if path.exists() {
             let last_entry = try!(read_last_entry(&path));
-            match log_entry::decode_log_entry(last_entry) {
+            match LogEntry::decode(last_entry) {
                 Ok(logentry) => {
                     start_idx = logentry.idx;
                     term = logentry.term;
@@ -141,7 +148,7 @@ impl Log {
             let mut bw = BufferedWriter::new(tmpfile);
             for ln in br.lines() {
                 let line = ln.unwrap();
-                match log_entry::decode_log_entry(line.trim()) {
+                match LogEntry::decode(line.trim()) {
                     Ok(curr_ent) => {
                         if curr_ent.idx == entry_idx {
                             break;  // TODO: can you break out of an iterator loop?
@@ -181,6 +188,23 @@ impl Log {
     }
 }
 
+impl LogEntry {
+    fn decode(json_str: &str) -> Result<LogEntry, json::Error> {
+        match json::from_str(json_str) {
+            Ok(jobj) => {
+                let mut decoder = json::Decoder::new(jobj);
+                Decodable::decode(&mut decoder)
+            },
+            Err(e) => Err(e)
+        }
+    }
+
+    pub fn encode(&self) -> ~str {
+        json::Encoder::str_encode(self)
+    }
+}
+
+// TODO: somewhere better?
 fn read_last_entry(path: &Path) -> IoResult<~str> {
     let file = try!(File::open(path));
     let mut br = BufferedReader::new(file);
@@ -201,9 +225,12 @@ fn read_last_entry(path: &Path) -> IoResult<~str> {
 mod test {
     use std::io::fs;
     use std::io::{BufferedReader,File};
+    
+    use serialize::{json, Decodable};
+    use uuid::Uuid;
 
-    use schooner::log_entry::LogEntry;
-    use schooner::append_entries::AppendEntriesRequest;
+    use super::LogEntry;
+    use super::super::append_entries::AppendEntriesRequest;
 
     static testlog: &'static str = "datalog/log.test";
 
@@ -278,4 +305,54 @@ mod test {
         assert!(result.is_ok());
         assert_eq!(0, num_entries_in_test_log());
     }
+
+    #[test]
+    fn test_json_encode_of_LogEntry() {
+        let uuidstr = Uuid::new_v4().to_hyphenated_str();
+        let logentry = super::LogEntry{idx: 155, term: 2, data: ~"wc", uuid: uuidstr.clone()};
+
+        let jstr = logentry.encode();
+        assert!(jstr.len() > 0);
+        assert!(jstr.contains("\"idx\":155"));
+        assert!(jstr.contains("\"data\":\"wc\""));
+        assert!(jstr.contains(format!("\"uuid\":\"{}\"", uuidstr)));
+    }
+
+    // TODO: what does this test even test? Surely we should always be
+    // using the "right" decode/encode methods?
+    #[test]
+    fn test_json_decode_of_LogEntry() {
+        let jstr = ~r##"{"idx": 200, "term": 4, "data": "foo", "uuid": "4343"}"##;
+        let jobj = json::from_str(jstr);
+        assert!( jobj.is_ok() );
+
+        let mut decoder = json::Decoder::new(jobj.unwrap());
+        let logentry: super::LogEntry = Decodable::decode(&mut decoder).unwrap();
+
+        assert_eq!(200, logentry.idx);
+        assert_eq!(4, logentry.term);
+        assert_eq!(~"foo", logentry.data);
+        assert_eq!(~"4343", logentry.uuid);
+    }
+
+    #[test]
+    fn test_decode_log_entry_fn_happy_path() {
+        let jstr = ~r##"{"idx": 200, "term": 4, "data": "foo", "uuid": "deadbeef"}"##;
+        let result = LogEntry::decode(jstr);
+        assert!(result.is_ok());
+
+        let logentry = result.unwrap();
+        assert_eq!(200, logentry.idx);
+        assert_eq!(4, logentry.term);
+        assert_eq!(~"foo", logentry.data);
+        assert_eq!(~"deadbeef", logentry.uuid);
+    }
+
+    #[test]
+    fn test_decode_log_entry_fn_error_path() {
+        let jstr = ~"{abc}";
+        let result = LogEntry::decode(jstr);
+        assert!(result.is_err());
+    }
 }
+

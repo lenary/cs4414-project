@@ -3,7 +3,7 @@ extern crate serialize;
 use std::vec::Vec;
 use serialize::{json, Decodable};
 
-use schooner::log_entry::LogEntry;
+use super::consistent_log::LogEntry;
 
 #[deriving(Decodable, Encodable, Clone, Show)]
 pub struct AppendEntriesRequest {
@@ -15,6 +15,21 @@ pub struct AppendEntriesRequest {
     pub entries: Vec<LogEntry>, // entries to log; may be empty (hearbeat msg)
 }
 
+impl AppendEntriesRequest {
+    pub fn encode(&self) -> ~str {
+        json::Encoder::str_encode(&self)
+    }
+    
+    pub fn decode(json_str: &str) -> Result<AppendEntriesRequest, json::Error> {
+        match json::from_str(json_str) {
+            Ok(jobj) => {
+                let mut decoder = json::Decoder::new(jobj);
+                Decodable::decode(&mut decoder)
+            },
+            Err(e) => Err(e)
+        }
+    }
+}
 
 #[deriving(Decodable, Encodable, Clone, Show)]
 pub struct AppendEntriesResponse {
@@ -28,31 +43,28 @@ pub struct AppendEntriesResponse {
     pub peer_id: uint,   // id of the peer (follower) sending the response
 }
 
-pub fn decode_append_entries_request(json_str: &str) -> Result<AppendEntriesRequest, json::Error> {
-    match json::from_str(json_str) {
-        Ok(jobj) => {
-            let mut decoder = json::Decoder::new(jobj);
-            Decodable::decode(&mut decoder)
-        },
-        Err(e) => Err(e)
+impl AppendEntriesResponse {
+    pub fn encode(&self) -> ~str {
+        json::Encoder::str_encode(&self)
+    }
+    
+    pub fn decode(json_str: &str) -> Result<AppendEntriesResponse, json::Error> {
+        match json::from_str(json_str) {
+            Ok(jobj) => {
+                let mut decoder = json::Decoder::new(jobj);
+                Decodable::decode(&mut decoder)
+            },
+            Err(e) => Err(e)
+        }
     }
 }
-
-pub fn decode_append_entries_response(json_str: &str) -> Result<AppendEntriesResponse, json::Error> {
-    match json::from_str(json_str) {
-        Ok(jobj) => {
-            let mut decoder = json::Decoder::new(jobj);
-            Decodable::decode(&mut decoder)
-        },
-        Err(e) => Err(e)
-    }
-}
-
 
 #[cfg(test)]
 mod test {
     use serialize::{json, Decodable};
-    use schooner::log_entry::LogEntry;
+    use super::super::consistent_log::LogEntry;
+    
+    use super::{AppendEntriesRequest, AppendEntriesResponse};
 
     #[test]
     fn test_json_encode_of_AppendEntriesResponse() {
@@ -89,7 +101,7 @@ mod test {
     fn test_json_decode_of_AppendEntriesResponse_via_api() {
         let jstr = ~"{\"success\":true,\"term\":777,\"idx\":99,\"commit_idx\":33,\"peer_id\":2}";
 
-        let result = super::decode_append_entries_response(jstr);
+        let result = AppendEntriesResponse::decode(jstr);
         assert!(result.is_ok());
 
         let aeresp = result.unwrap();
