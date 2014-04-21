@@ -5,3 +5,4 @@ server
 server.test.config
 test.out
 datalog
+server_test
