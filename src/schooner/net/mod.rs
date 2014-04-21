@@ -1,4 +1,5 @@
 use super::events::RaftEvent;
+use std::vec::Vec;
 
 pub use self::peer::{Peer,parse_config};
 
@@ -10,12 +11,18 @@ mod peer;
 
 // TODO: This may need more, or may not be needed at all, I don't
 // know.
-// It may just be easier to serialize and deserialize in the other
-// RaftEvent trait itself.
-pub trait RaftNetEvent {
-    fn build() -> ~RaftEvent;
+// This is essentially to do serialisation/deserialisation
+// there should be only one of these per RaftEvent right now
+
+pub trait RaftNetEvent<Event> {
+    fn from_event(event: &Event) -> ~Self;
+    fn to_event(&self) -> ~Event;
+
+    fn parse(bytes: ~Vec<u8>) -> Option<~Self>;
+    fn serialize(&self) -> Option<~Vec<u8>>;
 }
 
+// TODO: fill this out further.
 struct PeerConfig;
 
 // TODO: Peer will contain identity info and channels for

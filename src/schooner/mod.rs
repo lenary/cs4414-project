@@ -1,6 +1,5 @@
 #![feature(phase,globs)]
 
-
 #[phase(syntax, link)]
 extern crate log;
 extern crate rand;

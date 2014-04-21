@@ -1,3 +1,8 @@
+// TODO: this should probably be merged with
+// schooner/events/append_entries.rs somehow
+// Though lots of the serialisation/deserialisation should go into
+// schooner/net/ somewhere
+
 extern crate serialize;
 
 use std::vec::Vec;

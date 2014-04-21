@@ -11,5 +11,5 @@ pub trait RaftEvent {
         false
     }
 
-    // TODO: anything else? Serialisation/Deserialisation?
+    // TODO: anything else?
 }
