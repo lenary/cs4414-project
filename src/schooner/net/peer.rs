@@ -1,5 +1,6 @@
 use std::io::{BufferedReader, File, InvalidInput, IoError, IoResult};
 use std::vec::Vec;
+use super::super::append_entries::{AppendEntriesRequest,AppendEntriesResponse};
 
 #[deriving(Clone, Show)]
 pub struct Peer {

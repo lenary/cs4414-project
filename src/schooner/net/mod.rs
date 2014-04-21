@@ -3,7 +3,8 @@ use std::vec::Vec;
 
 pub use self::peer::{Peer,parse_config};
 
-mod peer;
+pub mod peer;
+pub mod handlers;
 
 // TODO: put entry functions in here, like:
 // - start_peer_helper (which returns a Peer struct, including fields
