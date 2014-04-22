@@ -10,13 +10,15 @@ pub use self::traits::RaftEvent;
 // and parts)
 pub use self::append_entries::{AppendEntriesReq, AppendEntriesRes};
 pub use self::vote::{VoteReq, VoteRes};
+pub use self::handoff::{HandoffReq, HandoffRes};
 
 // Application-level Messages
-pub use self::application::{ApplicationReq, ApplicationRes, HandoffReq, HandoffRes};
+pub use self::application::{ApplicationReq, ApplicationRes};
 
 mod traits; // Annoyingly can't be called "trait" because keyword
 mod append_entries;
 mod vote;
+mod handoff;
 mod application;
 
 // This feels like a terrible hack, but we should keep it for the moment
