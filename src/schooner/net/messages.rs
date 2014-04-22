@@ -1,6 +1,75 @@
 use std::str;
+use std::io::net::ip::SocketAddr;
 use std::io::net::tcp::{TcpListener,TcpStream};
-use std::io::{Acceptor,BufferedReader,InvalidInput,IoError,IoResult,Listener};
+use std::io::Acceptor;
+use std::io::{BufferedReader,InvalidInput,IoError,IoResult,Listener};
+use super::super::Event;
+
+static STOP_MSG: &'static str = "STOP";
+
+///
+/// The network listener sets up a socket listener loop to accept incoming TCP connections.
+/// When a network msg comes in, an Event is created with the string contents of the "message"
+/// and a Sender channel is put on the Event (why??) and the event is sent.
+/// The serve_loop will read from that channel and process the Event.
+/// Events can be any incoming information, such as STOP messages, AEReqs, AEResponses
+/// or client commands
+/// Param:
+///  - conx_str: info to create SocketAddr for listening on
+///  - chan: Event channel in the Server struct.
+///
+pub fn network_listener(conx_str: ~str, chan: Sender<~Event>, svr_id: uint) {
+    let addr = from_str::<SocketAddr>(conx_str).expect("Address error.");
+    let mut acceptor = TcpListener::bind(addr).unwrap().listen().unwrap();
+    info!("server <{}> listening on {:}", svr_id, addr);
+
+    // TODO: document what this channel is for
+    let (chsend, chrecv): (Sender<~str>, Receiver<~str>) = channel();
+    let mut stop_signalled = false;
+
+    debug!("NL: DEBUG 00: svr: {}", svr_id);
+    for stream in acceptor.incoming() {
+        debug!("NL: DEBUG 0: svr: {}", svr_id);
+
+        let mut stream = stream.unwrap();
+
+        // TODO: only handling one request at a time for now => spawn threads later?
+        match read_network_msg(stream.clone(), svr_id) {
+            Ok(input)  => {
+                let ev = ~Event{msg: input.clone(), ch: chsend.clone()};
+                chan.send(ev);
+
+                if is_stop_msg(input) {
+                    stop_signalled = true;  // TODO: do I need to set this bool var or can I just break out here?
+                    info!("NL: INFO 1: stop msg received at svr: {}", svr_id);
+
+                } else {
+                    info!("NL: sent Event to event-loop; now waiting on response for svr: {}", svr_id);
+
+                    // Once the Event is sent to serve-loop task it awaits a response (string)
+                    // and the response will be send back to the network caller.
+                    // Since the response is just a string, all logic of what is in the request
+                    // & response is handled by the serve-loop
+                    let resp = chrecv.recv();
+                    info!("NL: sending response: {:?}", resp);
+                    let result = stream.write_str(resp);
+                    if result.is_err() {
+                        error!("ERROR: Unable to respond to sender over network: {:?} for svr: {}", result.err(), svr_id);
+                    }
+                    let _ = stream.flush();
+                }
+                debug!("NL: DEBUG 2 for svr {}", svr_id);
+            },
+            Err(ioerr) => error!("ERROR: {:?}", ioerr)
+        }
+        if stop_signalled {
+            debug!("NL: DEBUG 4 for svr {}", svr_id);
+            break;
+        }
+    }
+
+    debug!("network listener shutting down ... for svr {}", svr_id);
+}
 
 ///
 /// TODO: can this fn deal with HTTP style requests? If not, what should the client request look like for this to work?
@@ -54,4 +123,8 @@ pub fn parse_content_length(len_line: &str) -> Option<uint> {
 
     let lenstr = parts.get(1).trim();
     from_str::<uint>(lenstr)
+}
+
+pub fn is_stop_msg(s: &str) -> bool {
+    s == STOP_MSG
 }

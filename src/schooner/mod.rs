@@ -9,15 +9,13 @@ extern crate uuid;
 
 use std::comm::Select;
 // use std::comm::{Empty, Data, Disconnected};
-use std::{cmp,str};
+use std::{cmp};
 use std::vec::Vec;
 use std::io::Timer;
 
 // TODO: None of this should be in this module. It should go into net
 // (I believe they are all to do with communicating with Peers)
-use std::io::{Acceptor,BufferedReader,InvalidInput,IoError,IoResult,Listener};
-use std::io::net::ip::SocketAddr;
-use std::io::net::tcp::{TcpListener,TcpStream};
+use std::io::IoResult;
 use serialize::json;
 use rand::{task_rng,Rng};
 use sync::TaskPool;
@@ -28,7 +26,7 @@ use self::net::*;
 use self::append_entries::{AppendEntriesRequest,AppendEntriesResponse};
 
 use net::handlers::leader_peer_handler;
-use net::messages::{read_network_msg, parse_content_length};
+use net::messages::{network_listener, is_stop_msg};
 mod events;
 mod consistent_log;
 mod net;
@@ -52,8 +50,6 @@ fn main() {
 // TODO: a trait for the Application's State Machine. See also
 // ApplicationReq/Res and HandoffReq/Res
 
-// where could this go?
-static STOP_MSG: &'static str = "STOP";
 // TODO use Option(thing)
 static UNKNOWN: u64     = 0u64;  // used for idx and term
 static UNKNOWN_LDR: int = -1;
@@ -725,77 +721,8 @@ fn is_aereq_from_another_leader(msg: &~str) -> bool {
 }
 
 
-
 fn is_cmd_from_client(msg: &str) -> bool {
     msg.trim().starts_with("Uuid: ")
-}
-
-///
-/// The network listener sets up a socket listener loop to accept incoming TCP connections.
-/// When a network msg comes in, an Event is created with the string contents of the "message"
-/// and a Sender channel is put on the Event (why??) and the event is sent.
-/// The serve_loop will read from that channel and process the Event.
-/// Events can be any incoming information, such as STOP messages, AEReqs, AEResponses
-/// or client commands
-/// Param:
-///  - conx_str: info to create SocketAddr for listening on
-///  - chan: Event channel in the Server struct.
-///
-pub fn network_listener(conx_str: ~str, chan: Sender<~Event>, svr_id: uint) {
-    let addr = from_str::<SocketAddr>(conx_str).expect("Address error.");
-    let mut acceptor = TcpListener::bind(addr).unwrap().listen();
-    info!("server <{}> listening on {:}", svr_id, addr);
-
-    // TODO: document what this channel is for
-    let (chsend, chrecv): (Sender<~str>, Receiver<~str>) = channel();
-    let mut stop_signalled = false;
-
-    debug!("NL: DEBUG 00: svr: {}", svr_id);
-    for stream in acceptor.incoming() {
-        debug!("NL: DEBUG 0: svr: {}", svr_id);
-
-        let mut stream = stream.unwrap();
-
-        // TODO: only handling one request at a time for now => spawn threads later?
-        match read_network_msg(stream.clone(), svr_id) {
-            Ok(input)  => {
-                let ev = ~Event{msg: input.clone(), ch: chsend.clone()};
-                chan.send(ev);
-
-                if is_stop_msg(input) {
-                    stop_signalled = true;  // TODO: do I need to set this bool var or can I just break out here?
-                    info!("NL: INFO 1: stop msg received at svr: {}", svr_id);
-
-                } else {
-                    info!("NL: sent Event to event-loop; now waiting on response for svr: {}", svr_id);
-
-                    // Once the Event is sent to serve-loop task it awaits a response (string)
-                    // and the response will be send back to the network caller.
-                    // Since the response is just a string, all logic of what is in the request
-                    // & response is handled by the serve-loop
-                    let resp = chrecv.recv();
-                    info!("NL: sending response: {:?}", resp);
-                    let result = stream.write_str(resp);
-                    if result.is_err() {
-                        error!("ERROR: Unable to respond to sender over network: {:?} for svr: {}", result.err(), svr_id);
-                    }
-                    let _ = stream.flush();
-                }
-                debug!("NL: DEBUG 2 for svr {}", svr_id);
-            },
-            Err(ioerr) => error!("ERROR: {:?}", ioerr)
-        }
-        if stop_signalled {
-            debug!("NL: DEBUG 4 for svr {}", svr_id);
-            break;
-        }
-    }
-
-    debug!("network listener shutting down ... for svr {}", svr_id);
-}
-
-fn is_stop_msg(s: &str) -> bool {
-    s == STOP_MSG
 }
 
 

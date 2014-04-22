@@ -1,8 +1,8 @@
 use serialize::json;
 use std::io::net::tcp::TcpStream;
-use std::io::{IoError,IoResult,Listener};
+use std::io::IoResult;
 use std::io::net::ip::SocketAddr;
-use super::peer::{Peer};
+use super::peer::Peer;
 use super::super::append_entries::{AppendEntriesRequest,AppendEntriesResponse};
 
 pub fn leader_peer_handler(peer: Peer, chsend: Sender<IoResult<AppendEntriesResponse>>, aereq: AppendEntriesRequest) {
