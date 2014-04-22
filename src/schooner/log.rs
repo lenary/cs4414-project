@@ -73,14 +73,14 @@ impl Log {
             try!(self.truncate(aereq.prev_log_idx + 1));
             return Err(IoError{kind: InvalidInput,
                                desc: "prev_log_idx < self.log.idx mismatch",
-                               detail: Some(format!("aereq.prev_log_idx: {:u}; folower log idx {:u}",
+                               detail: Some(format!("aereq.prev_log_idx: {:u}; follower log idx {:u}",
                                                     aereq.prev_log_idx, self.idx))});
         }
 
         if aereq.prev_log_idx > self.idx {
             return Err(IoError{kind: InvalidInput,
-                               desc: "prev_log_idx < self.log.idx mismatch",
-                               detail: Some(format!("aereq.prev_log_idx: {:u}; folower log idx {:u}",
+                               desc: "prev_log_idx > self.log.idx mismatch",
+                               detail: Some(format!("aereq.prev_log_idx: {:u}; follower log idx {:u}",
                                                     aereq.prev_log_idx, self.idx))});
         }
 

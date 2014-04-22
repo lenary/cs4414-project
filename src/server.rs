@@ -612,7 +612,7 @@ impl Server {
     }
 
     ///
-    /// Crates an AERequest with already logged entries starting from `logidx`
+    /// Creates an AERequest with already logged entries starting from `logidx`
     /// in the Log cache.
     ///
     fn make_aereq_from_log(&mut self, logidx: u64) -> AppendEntriesRequest {
@@ -620,11 +620,12 @@ impl Server {
 
         // FIXME: dangerous => converting from u64 to uint, so in effect can't cache
         //        more then uint-max in memory
-        let entries = Vec::from_slice(self.log.logentries.slice_from(logidx as uint));
+        // Note: logentries are 1-indexed, so must subtract one for entry in logentries vec
+        let entries = Vec::from_slice(self.log.logentries.slice_from((logidx - 1) as uint));
 
         AppendEntriesRequest {
             term: self.log.term,
-            prev_log_idx: self.log.idx,
+            prev_log_idx: logidx - 1,
             prev_log_term: self.log.term,
             commit_idx: self.commit_idx,
             leader_id: self.id,
@@ -1204,7 +1205,354 @@ mod test {
     }
 
     /* ---[ tests ]--- */
+
+
     #[test]
+    fn test_log_repair_scenario2_variation_send_message_before_svr3_starts_ensure_correct_ordering() {
+        setup();
+        write_cfg_file(3);
+
+        let wres = write_preexisting_log_entries(1, vec!(1,1,1,2,2,2,2));  // leader's log
+        if wres.is_err() {
+            fail!("{:?}", wres);
+        }
+        let wres = write_preexisting_log_entries(2, vec!(1,1,1,2,2,2));   // behind by 1
+        if wres.is_err() {
+            fail!("{:?}", wres);
+        }
+        let wres = write_preexisting_log_entries(3, vec!(1,1,1,2));       // behind by 3
+        if wres.is_err() {
+            fail!("{:?}", wres);
+        }
+
+        // start leader
+        let start_result1 = start_server(1, Some(CfgOptions{init_state: Leader}));
+        if start_result1.is_err() {
+            fail!("start_result1.is_err: {:?}", start_result1);
+        }
+        timer::sleep(20); // wait a short while for the leader to get set up and ready to msg followers
+
+        // start follower, svr 2
+        let start_result2 = start_server(2, None);
+        if start_result2.is_err() {
+            send_shutdown_signal(1);
+            fail!("start_result2.is_err: {:?}", start_result2);
+        }
+
+        timer::sleep(250); // wait a short while heartbeats to have propagated
+
+        let t1s1_datalog_res = read_datalog(S1TEST_PATH);
+        let t1s2_datalog_res = read_datalog(S2TEST_PATH);  // should have 7 entries now
+        let t1s3_datalog_res = read_datalog(S3TEST_PATH);  // should have orig 4 entries
+
+        // send two messages befor svr3 is started
+
+        let ldr_addr = start_result1.unwrap();
+
+        let mut stream = TcpStream::connect(ldr_addr);
+        let send_result = send_client_cmd(&mut stream, ~"PUT x=400");
+        if send_result.is_err() {
+            send_shutdown_signal(1);
+            send_shutdown_signal(2);
+            fail!("send_result.is_err: {:?}", send_result);
+        }
+
+        let result1 = stream.read_to_str();
+        drop(stream); // close the connection
+
+        let mut stream = TcpStream::connect(ldr_addr);
+        let send_result = send_client_cmd(&mut stream, ~"PUT x=401");
+        if send_result.is_err() {
+            send_shutdown_signal(1);
+            send_shutdown_signal(2);
+            fail!("send_result.is_err: {:?}", send_result);
+        }
+
+        let result1 = stream.read_to_str();
+        drop(stream); // close the connection
+
+        // pause to ensure messages are propagated
+        timer::sleep(100);
+
+        // start follower, svr 3
+        let start_result3 = start_server(3, None);
+        if start_result3.is_err() {
+            send_shutdown_signal(1);
+            send_shutdown_signal(2);
+            fail!("send_result3.is_err: {:?}", start_result3);
+        }
+
+        // pause to get svr3 caught up
+        timer::sleep(250);
+
+        // read state of datalogs at t2
+        let t2s1_datalog_res = read_datalog(S1TEST_PATH);
+        let t2s2_datalog_res = read_datalog(S2TEST_PATH);
+        let t2s3_datalog_res = read_datalog(S3TEST_PATH);
+
+        spawn(proc() {
+            send_shutdown_signal(2);
+        });
+        spawn(proc() {
+            send_shutdown_signal(3);
+        });
+        send_shutdown_signal(1);
+
+        assert!(result1.is_ok());
+
+        assert!(t1s1_datalog_res.is_ok());
+        assert!(t1s2_datalog_res.is_ok());
+        assert!(t1s3_datalog_res.is_ok());
+
+        let t1s1_datalog = t1s1_datalog_res.unwrap();
+        let t1s2_datalog = t1s2_datalog_res.unwrap();
+        let t1s3_datalog = t1s3_datalog_res.unwrap();
+
+        assert_eq!(7, t1s1_datalog.len());
+        assert_eq!(7, t1s2_datalog.len());
+        assert_eq!(4, t1s3_datalog.len());
+
+        assert_eq!(t1s1_datalog, t1s2_datalog);
+
+        let t2s1_datalog = t2s1_datalog_res.unwrap();
+        let t2s2_datalog = t2s2_datalog_res.unwrap();
+        let t2s3_datalog = t2s3_datalog_res.unwrap();
+
+        assert_eq!(9, t2s1_datalog.len());
+        assert_eq!(9, t2s2_datalog.len());
+        assert_eq!(9, t2s3_datalog.len());
+
+        assert_eq!(t2s1_datalog, t2s2_datalog);
+        assert_eq!(t2s1_datalog, t2s3_datalog);
+
+        assert!(t2s3_datalog.get(7).contains("PUT x=400"));
+        assert!(t2s3_datalog.get(8).contains("PUT x=401"));
+    }
+
+
+    // scenario 2:
+    //  terms between leader and follower match
+    //  follower idx is behind leader idx
+    //  leader must send "catch up" entries
+    #[test]
+    fn test_log_repair_scenario2() {
+        setup();
+        write_cfg_file(3);
+
+        let wres = write_preexisting_log_entries(1, vec!(1,1,1,2,2,2,2));  // leader's log
+        if wres.is_err() {
+            fail!("{:?}", wres);
+        }
+        let wres = write_preexisting_log_entries(2, vec!(1,1,1,2,2,2));   // behind by 1
+        if wres.is_err() {
+            fail!("{:?}", wres);
+        }
+        let wres = write_preexisting_log_entries(3, vec!(1,1,1,2));       // behind by 3
+        if wres.is_err() {
+            fail!("{:?}", wres);
+        }
+
+        // start leader
+        let start_result1 = start_server(1, Some(CfgOptions{init_state: Leader}));
+        if start_result1.is_err() {
+            fail!("start_result1.is_err: {:?}", start_result1);
+        }
+        timer::sleep(20); // wait a short while for the leader to get set up and ready to msg followers
+
+        // start follower, svr 2
+        let start_result2 = start_server(2, None);
+        if start_result2.is_err() {
+            send_shutdown_signal(1);
+            fail!("start_result2.is_err: {:?}", start_result2);
+        }
+
+        // start follower, svr 3
+        let start_result3 = start_server(3, None);
+        if start_result3.is_err() {
+            send_shutdown_signal(1);
+            send_shutdown_signal(2);
+            fail!("send_result3.is_err: {:?}", start_result3);
+        }
+
+        timer::sleep(250); // wait a short while heartbeats to have propagated
+
+        let t1s1_datalog_res = read_datalog(S1TEST_PATH);
+        let t1s2_datalog_res = read_datalog(S2TEST_PATH);  // should have 7 entries now
+        let t1s3_datalog_res = read_datalog(S3TEST_PATH);  // should have 7 entries now
+
+        // now send another message just to test a new entry being sent out
+
+        let ldr_addr = start_result1.unwrap();
+
+        let mut stream = TcpStream::connect(ldr_addr);
+        let send_result1 = send_client_cmd(&mut stream, ~"PUT x=400");
+        if send_result1.is_err() {
+            send_shutdown_signal(1);
+            send_shutdown_signal(2);
+            fail!("send_result1.is_err: {:?}", send_result1);
+        }
+
+        let result1 = stream.read_to_str();
+        drop(stream); // close the connection
+
+        // long pause to ensure message is propagated
+        timer::sleep(150);
+
+        // read state of datalogs at t2
+        let t2s1_datalog_res = read_datalog(S1TEST_PATH);
+        let t2s2_datalog_res = read_datalog(S2TEST_PATH);
+        let t2s3_datalog_res = read_datalog(S3TEST_PATH);
+
+        spawn(proc() {
+            send_shutdown_signal(2);
+        });
+        spawn(proc() {
+            send_shutdown_signal(3);
+        });
+        send_shutdown_signal(1);
+
+        assert!(result1.is_ok());
+
+        assert!(t1s1_datalog_res.is_ok());
+        assert!(t1s2_datalog_res.is_ok());
+        assert!(t1s3_datalog_res.is_ok());
+
+        let t1s1_datalog = t1s1_datalog_res.unwrap();
+        let t1s2_datalog = t1s2_datalog_res.unwrap();
+        let t1s3_datalog = t1s3_datalog_res.unwrap();
+
+        assert_eq!(7, t1s1_datalog.len());
+        assert_eq!(7, t1s2_datalog.len());
+        assert_eq!(7, t1s3_datalog.len());
+
+        assert_eq!(t1s1_datalog, t1s2_datalog);
+        assert_eq!(t1s1_datalog, t1s3_datalog);
+
+        let t2s1_datalog = t2s1_datalog_res.unwrap();
+        let t2s2_datalog = t2s2_datalog_res.unwrap();
+        let t2s3_datalog = t2s3_datalog_res.unwrap();
+
+        assert_eq!(8, t2s1_datalog.len());
+        assert_eq!(8, t2s2_datalog.len());
+        assert_eq!(8, t2s3_datalog.len());
+
+        assert_eq!(t2s1_datalog, t2s2_datalog);
+        assert_eq!(t2s1_datalog, t2s3_datalog);
+
+        assert!(t2s3_datalog.get(7).contains("PUT x=400"));
+    }
+
+    // scenario 1:
+    //  terms between leader and follower match
+    //  follower idx is ahead of leader idx
+    //  follower should truncate log even after heartbeats only
+    //#[test]
+    fn test_log_repair_scenario1() {
+        setup();
+        write_cfg_file(3);
+
+        let wres = write_preexisting_log_entries(1, vec!(1,1,1,2,2));  // leader's log
+        if wres.is_err() {
+            fail!("{:?}", wres);
+        }
+        let wres = write_preexisting_log_entries(2, vec!(1,1,1,2,2));
+        if wres.is_err() {
+            fail!("{:?}", wres);
+        }
+        let wres = write_preexisting_log_entries(3, vec!(1,1,1,2,2,2,2));  // server 3 has two entries more than leader (of same term)
+        if wres.is_err() {
+            fail!("{:?}", wres);
+        }
+
+        // start leader
+        let start_result1 = start_server(1, Some(CfgOptions{init_state: Leader}));
+        if start_result1.is_err() {
+            fail!("start_result1.is_err: {:?}", start_result1);
+        }
+        timer::sleep(20); // wait a short while for the leader to get set up and ready to msg followers
+
+        // start follower, svr 2
+        let start_result2 = start_server(2, None);
+        if start_result2.is_err() {
+            send_shutdown_signal(1);
+            fail!("start_result2.is_err: {:?}", start_result2);
+        }
+
+        // start follower, svr 3
+        let start_result3 = start_server(3, None);
+        if start_result3.is_err() {
+            send_shutdown_signal(1);
+            send_shutdown_signal(2);
+            fail!("send_result3.is_err: {:?}", start_result3);
+        }
+
+        timer::sleep(250); // wait a short while heartbeats to have propagated
+
+        let t1s1_datalog_res = read_datalog(S1TEST_PATH);
+        let t1s2_datalog_res = read_datalog(S2TEST_PATH);
+        let t1s3_datalog_res = read_datalog(S3TEST_PATH);  // should have been truncated to 5 entries
+
+        // now send another message just to test a new entry being sent out
+
+        let ldr_addr = start_result1.unwrap();
+
+        let mut stream = TcpStream::connect(ldr_addr);
+        let send_result1 = send_client_cmd(&mut stream, ~"PUT x=1");
+        if send_result1.is_err() {
+            send_shutdown_signal(1);
+            send_shutdown_signal(2);
+            fail!("send_result1.is_err: {:?}", send_result1);
+        }
+
+        let result1 = stream.read_to_str();
+        drop(stream); // close the connection
+
+        // long pause to ensure message is propagated
+        timer::sleep(150);
+
+        // read state of datalogs at t2
+        let t2s1_datalog_res = read_datalog(S1TEST_PATH);
+        let t2s2_datalog_res = read_datalog(S2TEST_PATH);
+        let t2s3_datalog_res = read_datalog(S3TEST_PATH);
+
+        spawn(proc() {
+            send_shutdown_signal(2);
+        });
+        spawn(proc() {
+            send_shutdown_signal(3);
+        });
+        send_shutdown_signal(1);
+
+        assert!(result1.is_ok());
+
+        assert!(t1s1_datalog_res.is_ok());
+        assert!(t1s2_datalog_res.is_ok());
+        assert!(t1s3_datalog_res.is_ok());
+
+        let t1s1_datalog = t1s1_datalog_res.unwrap();
+        let t1s2_datalog = t1s2_datalog_res.unwrap();
+        let t1s3_datalog = t1s3_datalog_res.unwrap();
+
+        assert_eq!(5, t1s1_datalog.len());
+        assert_eq!(5, t1s2_datalog.len());
+        assert_eq!(5, t1s3_datalog.len());
+
+        assert_eq!(t1s1_datalog, t1s2_datalog);
+        assert_eq!(t1s1_datalog, t1s3_datalog);
+
+        let t2s1_datalog = t2s1_datalog_res.unwrap();
+        let t2s2_datalog = t2s2_datalog_res.unwrap();
+        let t2s3_datalog = t2s3_datalog_res.unwrap();
+
+        assert_eq!(6, t2s1_datalog.len());
+        assert_eq!(6, t2s2_datalog.len());
+        assert_eq!(6, t2s3_datalog.len());
+
+        assert_eq!(t2s1_datalog, t2s2_datalog);
+        assert_eq!(t2s1_datalog, t2s3_datalog);
+    }
+
+    //#[test]
     fn test_leader_with_2_followers_both_active() {
         setup();
         write_cfg_file(3);
@@ -1295,119 +1643,12 @@ mod test {
 
     // this one won't work until we build in the "catch-up"/repair mechanism for a
     // leader to resend messages to an out of date follower
-    #[test]
+    //#[test]
     fn test_leader_with_2_followers_with_one_active_first_then_second_joins_later() {
         // FILL IN
     }
 
-    // scenario 1:
-    //  terms between leader and follower match
-    //  follower idx is ahead of leader idx
-    //  follower should truncate log even after heartbeats only
-    #[test]
-    fn test_log_repair_scenario1() {
-        setup();
-        write_cfg_file(3);
-
-        let wres = write_preexisting_log_entries(1, vec!(1,1,1,2,2));  // leader's log
-        if wres.is_err() {
-            fail!("{:?}", wres);
-        }
-        let wres = write_preexisting_log_entries(2, vec!(1,1,1,2,2));
-        if wres.is_err() {
-            fail!("{:?}", wres);
-        }
-        let wres = write_preexisting_log_entries(3, vec!(1,1,1,2,2,2,2));  // server 3 has two entries more than leader (of same term)
-        if wres.is_err() {
-            fail!("{:?}", wres);
-        }
-
-        // start leader
-        let start_result1 = start_server(1, Some(CfgOptions{init_state: Leader}));
-        if start_result1.is_err() {
-            fail!("start_result1.is_err: {:?}", start_result1);
-        }
-        timer::sleep(20); // wait a short while for the leader to get set up and ready to msg followers
-
-        // start follower, svr 2
-        let start_result2 = start_server(2, None);
-        if start_result2.is_err() {
-            send_shutdown_signal(1);
-            fail!("start_result2.is_err: {:?}", start_result2);
-        }
-
-        // start follower, svr 3
-        let start_result3 = start_server(3, None);
-        if start_result3.is_err() {
-            send_shutdown_signal(1);
-            send_shutdown_signal(2);
-            fail!("send_result3.is_err: {:?}", start_result3);
-        }
-
-        timer::sleep(300); // wait a short while heartbeats to have propagated
-
-        let t1s1_datalog_res = read_datalog(S1TEST_PATH);
-        let t1s2_datalog_res = read_datalog(S2TEST_PATH);
-        let t1s3_datalog_res = read_datalog(S3TEST_PATH);  // should have been truncated to 5 entries
-
-        // now send another message just to test a new entry being sent out
-
-        let ldr_addr = start_result1.unwrap();
-
-        let mut stream = TcpStream::connect(ldr_addr);
-        let send_result1 = send_client_cmd(&mut stream, ~"PUT x=1");
-        if send_result1.is_err() {
-            send_shutdown_signal(1);
-            send_shutdown_signal(2);
-            fail!("send_result1.is_err: {:?}", send_result1);
-        }
-
-        let result1 = stream.read_to_str();
-        drop(stream); // close the connection
-
-        // long pause to ensure message is propagated
-        timer::sleep(150);
-
-        // read state of datalogs at t2
-        let t2s1_datalog_res = read_datalog(S1TEST_PATH);
-        let t2s2_datalog_res = read_datalog(S2TEST_PATH);
-        let t2s3_datalog_res = read_datalog(S3TEST_PATH);
-
-        spawn(proc() {
-            send_shutdown_signal(2);
-        });
-        spawn(proc() {
-            send_shutdown_signal(3);
-        });
-        send_shutdown_signal(1);
-
-        assert!(result1.is_ok());
-
-        assert!(t1s1_datalog_res.is_ok());
-        assert!(t1s2_datalog_res.is_ok());
-        assert!(t1s3_datalog_res.is_ok());
-
-        let t1s1_datalog = t1s1_datalog_res.unwrap();
-        let t1s2_datalog = t1s2_datalog_res.unwrap();
-        let t1s3_datalog = t1s3_datalog_res.unwrap();
-
-        assert_eq!(5, t1s1_datalog.len());
-        assert_eq!(5, t1s2_datalog.len());
-        assert_eq!(5, t1s3_datalog.len());
-
-        let t2s1_datalog = t2s1_datalog_res.unwrap();
-        let t2s2_datalog = t2s2_datalog_res.unwrap();
-        let t2s3_datalog = t2s3_datalog_res.unwrap();
-
-        assert_eq!(6, t2s1_datalog.len());
-        assert_eq!(6, t2s2_datalog.len());
-        assert_eq!(6, t2s3_datalog.len());
-
-
-        // TODO: validate that file contents are the same
-    }
-
-    #[test]
+    //#[test]
     fn test_leader_with_4_followers_being_hit_by_multiple_clients_simultaneously() {
         setup();
         write_cfg_file(5);
@@ -1555,7 +1796,7 @@ mod test {
 
     // one follower experiences "network partition" phase, but since 2/3 of cluster still
     // up the commits should still happen
-    // #[test]
+    // //#[test]
     fn test_leader_with_2_followers_initially_then_lose_1() {
         setup();
         write_cfg_file(3);
@@ -1713,7 +1954,7 @@ mod test {
     // once majority committed logic is added this will hang since the client
     // won't get a response  => perhaps have to build in a timeout to respond
     // to the client if can't commit within 2 seconds or something?
-    // #[test]
+    // //#[test]
     fn test_leader_simple() {
         // setup();
         // write_cfg_file(1);
@@ -1759,7 +2000,7 @@ mod test {
         // assert_eq!(~"200 OK", result2.unwrap());  // BOGUS tmp response
     }
 
-    #[test]
+    //#[test]
     fn test_follower_to_send_client_redirect_when_leader_is_unknown() {
         setup();
         write_cfg_file(3);
@@ -1790,7 +2031,7 @@ mod test {
         assert!( !resp.contains("Redirect: 127.0.0.1:23158") );
     }
 
-    #[test]
+    //#[test]
     fn test_follower_to_send_client_redirect_when_leader_is_known() {
         setup();
         write_cfg_file(3);
@@ -1830,7 +2071,7 @@ mod test {
         assert!(resp.contains(format!("Redirect: 127.0.0.1:{}", S1TEST_PORT)));
     }
 
-    #[test]
+    //#[test]
     fn test_follower_with_single_AppendEntryRequest() {
         setup();
         write_cfg_file(1);
@@ -1885,7 +2126,7 @@ mod test {
         assert!(readres.is_err());
     }
 
-    #[test]
+    //#[test]
     fn test_follower_where_one_entry_was_not_committed_on_leader_so_must_be_truncated() {
         setup();
         write_cfg_file(1);
@@ -2004,89 +2245,7 @@ mod test {
     }
 
 
-    // REMOVE ME !!!!!!!!!!!
-    // #[test]
-    // fn test_follower_with_same_AppendEntryRequest_twice_should_return_false_2nd_time() {
-    //     setup();
-    //     write_cfg_file(1);
-
-    //     let svr_id = 1;
-    //     let start_result = start_server(svr_id, None);
-    //     if start_result.is_err() {
-    //         fail!("{:?}", start_result);
-    //     }
-    //     timer::sleep(350); // wait a short while for the leader to get set up and listening on its socket
-
-    //     let addr = start_result.unwrap();
-    //     let mut stream = TcpStream::connect(addr);
-
-    //     // test case task acts as leader sending AEReq
-
-    //     /* ---[ send logentry1 (term1) ]--- */
-
-    //     let logentry1 = send_aereq1(&mut stream);
-    //     let result1 = stream.read_to_str();
-    //     drop(stream); // close the connection
-
-
-    //     /* ---[ send logentry1 again (term1) ]--- */
-
-    //     stream = TcpStream::connect(addr);
-    //     let _ = send_aereq1(&mut stream);
-    //     let result2 = stream.read_to_str();
-    //     drop(stream); // close the connection
-
-    //     send_shutdown_signal(svr_id);
-
-    //     /* ---[ validate results ]--- */
-
-    //     // validate response => result 1 should be success = true
-
-    //     assert!(result1.is_ok());
-    //     let resp = result1.unwrap();
-
-    //     assert!(resp.contains("\"success\":true"));
-    //     let aeresp = append_entries::decode_append_entries_response(resp).unwrap();
-    //     assert_eq!(1, aeresp.term);
-    //     assert_eq!(1, aeresp.idx);
-    //     assert_eq!(1, aeresp.peer_id);
-    //     assert_eq!(super::UNKNOWN, aeresp.commit_idx);  // since no ldr has established any commits is UNKNOWN
-    //     assert_eq!(true, aeresp.success);
-
-
-    //     // result 2 should be success = false
-
-    //     assert!(result2.is_ok());
-    //     let resp2 = result2.unwrap();
-
-    //     assert!(resp2.contains("\"success\":false"));
-    //     let aeresp2 = append_entries::decode_append_entries_response(resp).unwrap();
-    //     assert_eq!(1, aeresp2.term);
-    //     assert_eq!(1, aeresp2.idx);
-    //     assert_eq!(1, aeresp.peer_id);
-    //     assert_eq!(super::UNKNOWN, aeresp.commit_idx);  // since no ldr has established any commits is UNKNOWN
-    //     assert_eq!(true, aeresp2.success);
-
-
-    //     // validate that response was written to disk
-    //     let filepath = Path::new(S1TEST_PATH);
-    //     assert!(filepath.exists());
-
-    //     // read in first entry and make sure it matches the logentry sent in the AEReq
-    //     let mut br = BufferedReader::new(File::open(&filepath));
-    //     let mut readres = br.read_line();
-    //     assert!(readres.is_ok());
-
-    //     let line = readres.unwrap().trim().to_owned();
-    //     let exp_str = json::Encoder::str_encode(&logentry1);
-    //     assert_eq!(exp_str, line);
-
-    //     // should only be one entry in the file
-    //     readres = br.read_line();
-    //     assert!(readres.is_err());
-    // }
-
-    #[test]
+    //#[test]
     fn test_follower_with_multiple_valid_AppendEntryRequests() {
         setup();
         write_cfg_file(1);
@@ -2127,7 +2286,7 @@ mod test {
         assert_eq!(1, aeresp.commit_idx); // with send_aereqs, commit_idx == first idx of indexes passed in
     }
 
-    #[test]
+    //#[test]
     fn test_follower_with_AppendEntryRequests_with_invalid_term() {
         setup();
         write_cfg_file(1);
@@ -2217,7 +2376,7 @@ mod test {
         assert_eq!(2, aeresp.commit_idx);  // this req failed, so is same commit_idx as prev
     }
 
-    #[test]
+    //#[test]
     fn test_follower_with_AppendEntryRequests_with_invalid_prevLogTerm() {
         setup();
         write_cfg_file(1);
@@ -2319,7 +2478,7 @@ mod test {
     }
 
 
-    #[test]
+    //#[test]
     fn test_follower_with_AppendEntryRequests_with_changing_commit_idx() {
         setup();
         write_cfg_file(1);
