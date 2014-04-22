@@ -3,16 +3,28 @@ use std::comm::*;
 use super::traits::RaftState;
 use super::events::RaftEvent;
 
-struct StateMachine<'a> {
-    select: ~Select,
-    event_rec: Handle<'a, ~RaftEvent>,
-    timer_rec: Handle<'a, ()>,
-    application_rec: Handle<'a, ~RaftEvent>,
+struct StateMachine {
+    event_rec: Receiver<~RaftEvent>,
+    timer_rec: Receiver<()>,
+    application_rec: Receiver<~RaftEvent>,
 }
 
 // TODO: how the fuck do we stop?
 fn go_go_gadget(init_state: ~RaftState, mut sm: ~StateMachine) {
     let mut current_state = init_state;
+
+    let mut selector = Select::new();
+    let mut event_handle = selector.handle(&sm.event_rec);
+    let mut timer_handle = selector.handle(&sm.timer_rec);
+    let mut app_handle   = selector.handle(&sm.application_rec);
+
+    unsafe {
+        event_handle.add();
+        timer_handle.add();
+        app_handle.add();
+    }
+
+
     'outer: loop {
         match current_state.handle_setup() {
             Some(new_state) => {
@@ -22,9 +34,9 @@ fn go_go_gadget(init_state: ~RaftState, mut sm: ~StateMachine) {
             },
             None => {
                 'inner: loop {
-                    let ready_id = sm.select.wait();
-                    if (ready_id == sm.timer_rec.id()) {
-                        sm.timer_rec.recv();
+                    let ready_id = selector.wait();
+                    if (ready_id == timer_handle.id()) {
+                        timer_handle.recv();
                         match current_state.handle_timeout() {
                             Some(new_state) => {
                                 current_state.handle_teardown();
@@ -34,9 +46,9 @@ fn go_go_gadget(init_state: ~RaftState, mut sm: ~StateMachine) {
                             None => {}
                         };
                     }
-                    else if (ready_id == sm.event_rec.id()) {
+                    else if (ready_id == event_handle.id()) {
                         // workout which one to call, get its result
-                        let event = sm.event_rec.recv();
+                        let event = event_handle.recv();
                         match current_state.handle_event(event) {
                             Some(new_state) => {
                                 current_state.handle_teardown();
@@ -46,8 +58,8 @@ fn go_go_gadget(init_state: ~RaftState, mut sm: ~StateMachine) {
                             None => {}
                         };
                     }
-                    else if (ready_id == sm.application_rec.id()) {
-                        let event = sm.application_rec.recv();
+                    else if (ready_id == app_handle.id()) {
+                        let event = app_handle.recv();
                         match current_state.handle_event(event) {
                             Some(new_state) => {
                                 current_state.handle_teardown();
