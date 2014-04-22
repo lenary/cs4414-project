@@ -16,7 +16,7 @@ use std::io::Timer;
 // TODO: None of this should be in this module. It should go into net
 // (I believe they are all to do with communicating with Peers)
 use std::io::IoResult;
-use serialize::json;
+use serialize::encoded;
 use rand::{task_rng,Rng};
 use sync::TaskPool;
 
@@ -26,7 +26,7 @@ use self::net::*;
 use self::append_entries::{AppendEntriesRequest,AppendEntriesResponse};
 
 use net::handlers::leader_peer_handler;
-use net::messages::{network_listener, is_stop_msg};
+use net::messages::{network_listener, is_stop_msg, serialize};
 mod events;
 mod consistent_log;
 mod net;
@@ -295,7 +295,7 @@ impl Server {
                                                   peer_id: self.id}
                         }
                     };
-                    let jstr = json::Encoder::str_encode(&aeresp);
+                    let jstr = serialize(&aeresp);
                     ev.ch.send(jstr);
                 }
                 debug!("FLW: DEBUG 3");
@@ -740,7 +740,7 @@ mod test {
     use std::io::timer;
     use std::vec::Vec;
 
-    use serialize::json;
+    use net::messages::serialize;
     use uuid::Uuid;
 
     use super::CfgOptions;
@@ -912,8 +912,8 @@ mod test {
             entries: entries.clone(),
         };
 
-        let json_aereq = json::Encoder::str_encode(aereq);
-        let req_msg = format!("Length: {:u}\n{:s}", json_aereq.len(), json_aereq);
+        let encoded_aereq = serialize(aereq);
+        let req_msg = format!("Length: {:u}\n{:s}", encoded_aereq.len(), encoded_aereq);
 
         let result = stream.write_str(req_msg);
         if result.is_err() {
@@ -936,8 +936,8 @@ mod test {
             entries: Vec::new(),
         };
 
-        let json_aereq = json::Encoder::str_encode(aereq);
-        let req_msg = format!("Length: {:u}\n{:s}", json_aereq.len(), json_aereq);
+        let encoded_aereq = serialize(aereq);
+        let req_msg = format!("Length: {:u}\n{:s}", encoded_aereq.len(), encoded_aereq);
 
         let result = stream.write_str(req_msg);
         if result.is_err() {
@@ -999,8 +999,8 @@ mod test {
             entries: entries,
         };
 
-        let json_aereq = json::Encoder::str_encode(aereq);
-        let req_msg = format!("Length: {:u}\n{:s}", json_aereq.len(), json_aereq);
+        let encoded_aereq = serialize(aereq);
+        let req_msg = format!("Length: {:u}\n{:s}", encoded_aereq.len(), encoded_aereq);
 
         ////
         let result = stream.write_str(req_msg);
@@ -1592,7 +1592,7 @@ mod test {
         assert!(readres.is_ok());
 
         let line = readres.unwrap().trim().to_owned();
-        let exp_str = json::Encoder::str_encode(&logentry1);
+        let exp_str = serialize(&logentry1);
         assert_eq!(exp_str, line);
 
         // should only be one entry in the file
@@ -1704,14 +1704,14 @@ mod test {
         assert!(readres.is_ok());
 
         let line = readres.unwrap().trim().to_owned();
-        let exp_str = json::Encoder::str_encode(&logentries123.get(0));
+        let exp_str = serialize(&logentries123.get(0));
         assert_eq!(exp_str, line);
 
         let readres = br.read_line();
         assert!(readres.is_ok());
 
         let line = readres.unwrap().trim().to_owned();
-        let exp_str = json::Encoder::str_encode(&logentries123.get(1));
+        let exp_str = serialize(&logentries123.get(1));
         assert_eq!(exp_str, line);
 
         // should only be two entries in the file (not three)
@@ -1793,7 +1793,7 @@ mod test {
     //     assert!(readres.is_ok());
 
     //     let line = readres.unwrap().trim().to_owned();
-    //     let exp_str = json::Encoder::str_encode(&logentry1);
+    //     let exp_str = serialize(&logentry1);
     //     assert_eq!(exp_str, line);
 
     //     // should only be one entry in the file

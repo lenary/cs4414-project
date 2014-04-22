@@ -3,11 +3,16 @@ use std::io::net::ip::SocketAddr;
 use std::io::net::tcp::{TcpListener,TcpStream};
 use std::io::Acceptor;
 use std::io::{BufferedReader,InvalidInput,IoError,IoResult,Listener};
+use serialize::json::Encoder;
+use serialize::Encodable;
 use super::super::Event;
 
 static STOP_MSG: &'static str = "STOP";
 
-///
+pub fn serialize<'a, T: Encodable<Encoder<'a>, IoError>>(to_encode_object: &T) -> ~str {
+    Encoder::str_encode(to_encode_object)
+}
+
 /// The network listener sets up a socket listener loop to accept incoming TCP connections.
 /// When a network msg comes in, an Event is created with the string contents of the "message"
 /// and a Sender channel is put on the Event (why??) and the event is sent.
