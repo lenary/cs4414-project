@@ -24,3 +24,17 @@ mod application;
 // This feels like a terrible hack, but we should keep it for the moment
 pub struct StopReq;
 impl RaftEvent for StopReq {}
+
+// We have to wrap the RaftEvents in this EventMsg to send them all
+// down the same channel.
+pub enum RaftEventMsg {
+    ARQ(AppendEntriesReq),
+    ARS(AppendEntriesRes),
+    VRQ(VoteReq),
+    VRS(VoteRes),
+    HRQ(HandoffReq),
+    HRS(HandoffRes),
+    APRQ(ApplicationReq),
+    APRS(ApplicationRes),
+    SRQ(StopReq),
+}

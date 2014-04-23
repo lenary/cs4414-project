@@ -1,4 +1,5 @@
 #![feature(phase,globs)]
+#![feature(macro_rules)]
 
 #[phase(syntax, link)]
 extern crate log;
@@ -32,6 +33,7 @@ mod consistent_log;
 mod net;
 
 mod traits;
+mod machine;
 mod leader;
 mod candidate;
 mod follower;
