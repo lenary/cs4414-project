@@ -16,7 +16,6 @@ use std::io::Timer;
 // TODO: None of this should be in this module. It should go into net
 // (I believe they are all to do with communicating with Peers)
 use std::io::IoResult;
-use serialize::encoded;
 use rand::{task_rng,Rng};
 use sync::TaskPool;
 
