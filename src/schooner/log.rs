@@ -42,7 +42,9 @@ impl Log {
         let logentries = if path.exists() {
             try!(read_entries_from_disk(&path))
         } else {
-            Vec::with_capacity(4096)
+            let mut v: Vec<LogEntry> = Vec::with_capacity(4096);
+            v.push(Log::zeroth_entry());
+            v
         };
 
         if logentries.len() > 0 {
@@ -64,17 +66,32 @@ impl Log {
     }
 
     ///
+    /// Raft indexes and terms start at 1 - the zeroth entry means "not started" or "unknown"
+    /// so to make indexing easier, a dummy zeroth entry is put into the in-memory log -
+    /// but not written to disk
+    ///
+    fn zeroth_entry() -> LogEntry {
+        LogEntry {
+            idx:  0,
+            term: 0,
+            data: ~"DUMMY",
+            uuid: ~"DUMMY",
+        }
+    }
+
+    ///
     /// Writes multiple log entries to the end of the log or truncates the log to the first_idx
     /// in the aereq if there is a mismatch between terms for the same indexed entry.
     /// This method should only be called when the AER has log entries (not heartbeat)
     ///
     pub fn append_entries(&mut self, aereq: &AppendEntriesRequest) -> IoResult<()> {
         if aereq.prev_log_idx < self.idx {
+            let orig_self_idx = self.idx;
             try!(self.truncate(aereq.prev_log_idx + 1));
             return Err(IoError{kind: InvalidInput,
                                desc: "prev_log_idx < self.log.idx mismatch",
                                detail: Some(format!("aereq.prev_log_idx: {:u}; follower log idx {:u}",
-                                                    aereq.prev_log_idx, self.idx))});
+                                                    aereq.prev_log_idx, orig_self_idx))});
         }
 
         if aereq.prev_log_idx > self.idx {
@@ -84,12 +101,15 @@ impl Log {
                                                     aereq.prev_log_idx, self.idx))});
         }
 
-        /////////////
+        // if get here prev_log_idx == self.idx
         if aereq.prev_log_term != self.term && self.term != 0 {
-            try!(self.truncate(aereq.prev_log_term));
+            if aereq.prev_log_term > self.term {
+                try!(self.truncate(aereq.prev_log_idx));
+            }
             return Err(IoError{kind: InvalidInput,
                                desc: "term mismatch at prev_log_idx",
-                               detail: Some(format!("term in follower is {:u}", self.term))});
+                               detail: Some(format!("aereq.term: {:u}; follower term {:u}",
+                                                    aereq.prev_log_term, self.term))});
         }
         for e in aereq.entries.iter() {
             try!(self.append_entry(e));
@@ -141,6 +161,7 @@ impl Log {
         let tmppath = Path::new(format!("{}-{:u}", self.path.display(), r));
 
         {
+            // FIXME: don't have to read in from file anymore now that it is all cached in memory
             let file = try!(File::open_mode(&self.path, Open, Read));
             let tmpfile = try!(File::open_mode(&tmppath, Open, Write));
 
@@ -164,7 +185,7 @@ impl Log {
         // truncate in-memory term/idx vector
         // NOTE: assumes we keep all log entries in place => otherwise have to offset by first idx entry in logentries
         // FIXME: dangerous => converting u64 to uint, so can only cache up to uint entries
-        let truncate_idx = (entry_idx - 1) as uint;  // have to subtract bcs idx is 1-based, not 0-based
+        let truncate_idx = entry_idx as uint;  // have to subtract bcs idx is 1-based, not 0-based
         if truncate_idx < self.logentries.len() {
             self.logentries.truncate(truncate_idx);
         }
@@ -193,6 +214,7 @@ fn read_entries_from_disk(path: &Path) -> IoResult<Vec<LogEntry>> {
     let mut br = BufferedReader::new(file);
 
     let mut entries: Vec<LogEntry> = Vec::with_capacity(4096);
+    entries.push(Log::zeroth_entry());
     for ln in br.lines() {
         match ln {
             Ok(line) => {
