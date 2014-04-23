@@ -1,6 +1,20 @@
 
 use super::events::*;
-use super::machine::{RaftStateTransition,Continue};
+use super::leader::Leader;
+use super::candidate::Candidate;
+use super::follower::Follower;
+
+pub enum RaftNextState {
+    RaftLeader(Leader),
+    RaftCandidate(Candidate),
+    RaftFollower(Follower)
+}
+
+pub enum RaftStateTransition {
+    NextState(RaftNextState),
+    Continue,
+    Stop
+}
 
 // This is a trait for all the Raft States: Leader, Candidate,
 // Follower. Each will have its own struct, and then inside that
@@ -76,5 +90,70 @@ pub trait RaftState {
 
     fn handle_application_res(&mut self, _res: ApplicationRes) -> RaftStateTransition {
         Continue
+    }
+}
+
+// Save some time by using a macro
+// Macro Guide: http://static.rust-lang.org/doc/master/guide-macros.html
+macro_rules! transition_proxy(
+    ($meth:ident) => (
+        match *self {
+            RaftLeader(ref mut leader)       => leader.$meth(),
+            RaftCandidate(ref mut candidate) => candidate.$meth(),
+            RaftFollower(ref mut follower)   => follower.$meth()
+        }
+        );
+    ($meth:ident, $arg:ident) => (
+        match *self {
+            RaftLeader(ref mut leader)       => leader.$meth($arg),
+            RaftCandidate(ref mut candidate) => candidate.$meth($arg),
+            RaftFollower(ref mut follower)   => follower.$meth($arg)
+        }
+    )
+)
+
+impl RaftState for RaftNextState {
+    fn handle_setup(&mut self) -> RaftStateTransition {
+        transition_proxy!(handle_setup)
+    }
+
+    fn handle_teardown(&mut self) {
+        transition_proxy!(handle_teardown)
+    }
+
+    fn handle_timeout(&mut self) -> RaftStateTransition {
+        transition_proxy!(handle_timeout)
+    }
+
+    fn handle_append_entries_req(&mut self, req: AppendEntriesReq) -> RaftStateTransition {
+        transition_proxy!(handle_append_entries_req, req)
+    }
+
+    fn handle_append_entries_res(&mut self, res: AppendEntriesRes) -> RaftStateTransition {
+        transition_proxy!(handle_append_entries_res, res)
+    }
+
+    fn handle_vote_req(&mut self, req: VoteReq) -> RaftStateTransition {
+        transition_proxy!(handle_vote_req, req)
+    }
+
+    fn handle_vote_res(&mut self, res: VoteRes) -> RaftStateTransition {
+        transition_proxy!(handle_vote_res, res)
+    }
+
+    fn handle_handoff_req(&mut self, req: HandoffReq) -> RaftStateTransition {
+        transition_proxy!(handle_handoff_req, req)
+    }
+
+    fn handle_handoff_res(&mut self, res: HandoffRes) -> RaftStateTransition {
+        transition_proxy!(handle_handoff_res, res)
+    }
+
+    fn handle_application_req(&mut self, req: ApplicationReq) -> RaftStateTransition {
+        transition_proxy!(handle_application_req, req)
+    }
+
+    fn handle_application_res(&mut self, res: ApplicationRes) -> RaftStateTransition {
+        transition_proxy!(handle_application_res, res)
     }
 }

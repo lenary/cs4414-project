@@ -23,7 +23,6 @@ use serialize::json;
 use rand::{task_rng,Rng};
 use sync::TaskPool;
 
-use self::events::*;
 use self::consistent_log::{Log,LogEntry};
 use self::net::*;
 use self::append_entries::{AppendEntriesRequest,AppendEntriesResponse};
@@ -34,6 +33,8 @@ mod net;
 
 mod traits;
 mod machine;
+mod server;
+
 mod leader;
 mod candidate;
 mod follower;
@@ -60,6 +61,7 @@ static TASK_POOL_SZ: uint = 16;  // TODO: how decide on the appropriate size?
 
 /* ---[ data structures ]--- */
 
+#[deprecated]
 #[deriving(Clone, Eq)]
 pub enum State {
     Stopped,
@@ -70,6 +72,7 @@ pub enum State {
 }
 
 // TODO: what else?
+#[deprecated]
 pub enum SError {
     InvalidArgument(~str),
     InvalidState(~str),
@@ -108,6 +111,7 @@ pub struct Server {
 /// task to the server_loop task
 ///
 // TODO: does this need to be enhanced?
+#[deprecated]
 pub struct Event {
     msg: ~str,         // incoming message from network (Peer svr or client)
     ch: Sender<~str>,  // for server_loop task to message back to network_listener task
@@ -117,6 +121,7 @@ pub struct Event {
 
 // TODO: may get rid of this once elections are set up - or still needed for testing?
 // for providing special setup options to a server
+#[deprecated]
 pub struct CfgOptions {
     init_state: State,
     // TODO: add more?
@@ -125,6 +130,7 @@ pub struct CfgOptions {
 ///
 /// struct to hold the two parts of a (non-HTTP) client message
 ///
+#[deprecated]
 #[deriving(Clone, Show)]
 struct ClientMsg {
     uuid: ~str,
