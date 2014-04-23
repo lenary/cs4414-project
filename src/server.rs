@@ -65,9 +65,6 @@ pub struct Server {
     peers: Vec<Peer>,          // peer servers
     leader: int,               // "pointer" to peer that is current leader (idx into peers Vec)  // TODO: should this be &Peer?
 
-    // c: Sender<~Event>,  // TODO: keep chan/sender?
-    // p: Receiver<~Event>,
-
     heartbeat_interval: u64,
     election_timeout: u64,
     // TOOD: more later?
@@ -113,8 +110,8 @@ impl Server {
     /// - logpath: path to the event log for this server (and uniq to this server)
     ///
     pub fn new(id: uint, cfgpath: Path, logpath: Path) -> IoResult<~Server> {
-
-        let lg = try!(Log::new(logpath.clone()));
+        let lg = try!(Log::new(logpath));
+        debug!("Log constructed in server {}. Log => {}", id, lg);
         let peers: Vec<Peer> = try!(peer::parse_config(cfgpath.clone()));
         let myidx = get_peer_idx(&peers, id);
         if myidx == -1 {
@@ -140,8 +137,6 @@ impl Server {
             last_applied_commit: UNKNOWN,
             peers: other_peers,
             leader: UNKNOWN_LDR,
-            // c: ch,
-            // p: pt,
             heartbeat_interval: DEFAULT_HEARTBEAT_INTERVAL,  // TODO: need to parameterize
             election_timeout: DEFAULT_ELECTION_TIMEOUT,      // TODO: need to parameterize
         };
@@ -308,7 +303,7 @@ impl Server {
         let heartbeat_timer = timer.periodic(self.heartbeat_interval);
 
         loop {
-            info!("in leader loop for = {} :: waiting on self.p", self.id);
+            info!("in leader loop for = {} :: waiting in select", self.id);
 
             // select over
             // 1) network_listener receiver, which brings in:
@@ -391,45 +386,28 @@ impl Server {
                     // AEResponse#success=false rejection scenario
                     info!("LDR: AEReq rejection: {:?}", aeresp);
 
-                    // interpretation of scenarios
-                    // if terms match:
-                    //   if peer_next_idx == self.log.idx + 1: follower has truncated logs and all now matches
-                    //   if peer_next_idx  < self.log.idx + 1: follower is behind => send missing AEReqs
-                    //   if peer_next_idx  > self.log.idx + 1: code logic error, follower should have truncated its logs
-                    match (aeresp.term == self.log.term, aeresp.idx == self.log.idx) {
-                        (true, true)   => {
-                            debug!("LDR: AEResponse rejection SCENARIO 1: {:?}", aeresp);
-                            // log repair scenario 1:
-                            // peer idx was *ahead of* leader prev_log_idx and truncated its results back leader
-                            self.peers.get_mut(peer_idx).next_idx = aeresp.idx + 1;
-                        },
-                        (true, false)  => {
-                            debug!("LDR: AEResponse rejection SCENARIO 2: {:?}", aeresp);
-                            // log repair scenario 2:
-                            // peer idx was *behind* leader prev_log_idx and needs to catch up
+                    if aeresp.idx == self.log.idx {
+                        debug!("eee %%%%%%%%%%%%%%%%%%%% .... MATCHING LOGS .... {:?} {:?} %%%%%%%%%%%%%% www", aeresp.idx, self.log.idx);
+                        self.peers.get_mut(peer_idx).next_idx = aeresp.idx + 1;
+                        self.ldr_send_heartbeat(pool, chsend_response);
 
-                            if aeresp.idx > self.log.idx {
-                                fail!("server.ldr_process_aeresponse_from_peer: peer <{}> has aeresp.idx > self.log.idx; {}",
-                                      self.peers.get(peer_idx).id, "ERROR: should have truncated logs")
-                            }
+                    } else if aeresp.idx < self.log.idx {
+                        debug!("eee %%%%%%%%%%%%%%%%%%%% .... FOLLOWER BEHIND .... {:?} {:?} %%%%%%%%%%%%%% www", aeresp.idx, self.log.idx);
+                        let peer_next_idx = aeresp.idx + 1;
+                        self.peers.get_mut(peer_idx).next_idx = peer_next_idx;
+                        let chsend_aeresp = chsend_response.clone();
 
-                            let peer_next_idx = aeresp.idx + 1;
-                            self.peers.get_mut(peer_idx).next_idx = peer_next_idx;
-                            let chsend_aeresp = chsend_response.clone();
+                        let aereq = self.make_aereq_from_log(peer_next_idx);
+                        let peer_copy = self.peers.get_mut(peer_idx).clone();
+                        pool.execute(proc(_: &uint) {
+                            Server::leader_peer_handler(peer_copy, chsend_aeresp, aereq);
+                        });
 
-                            let aereq = self.make_aereq_from_log(peer_next_idx);
-                            let peer_copy = self.peers.get_mut(peer_idx).clone();
-                            pool.execute(proc(_: &uint) {
-                                Server::leader_peer_handler(peer_copy, chsend_aeresp, aereq);
-                            });
-                        },
-                        (false, true)  => {},
-                        (false, false) => {},
+                    } else if aeresp.idx > self.log.idx {
+                        // should not happen (?!)
+                        fail!("server.ldr_process_aeresponse_from_peer: peer <{}> has aeresp.idx > self.log.idx; {}",
+                              self.peers.get(peer_idx).id, "ERROR: should have truncated logs")
                     }
-
-                    self.peers.get_mut(peer_idx).next_idx -= 1;  // back off to try again
-                    // TODO: do something with peer.match_idx ?
-                    // TODO: send aereq here ? => where/how do we keep trying with this peer ? => log_repair work needed here
                 }
                 Some(aeresp)
             },
@@ -565,7 +543,7 @@ impl Server {
 
         let ipaddr = format!("{}:{:u}", &peer.ip, peer.tcpport);
         let addr = from_str::<SocketAddr>(ipaddr).unwrap();
-        info!("PHDLR: DEBUG x887: connecting to: {}", ipaddr.clone());
+        info!("PHDLR: INFO x887: connecting to: {}", ipaddr.clone());
 
         let aereqstr = json::Encoder::str_encode(&aereq);
         let mut stream = TcpStream::connect(addr.clone());
@@ -610,20 +588,18 @@ impl Server {
     }
 
     ///
-    /// Crates an AERequest with already logged entries starting from `logidx`
+    /// Creates an AERequest with already logged entries starting from `logidx`
     /// in the Log cache.
     ///
     fn make_aereq_from_log(&mut self, logidx: u64) -> AppendEntriesRequest {
-        // let mut entries: Vec<LogEntry> = Vec::with_capacity((self.log.idx - logidx) as uint);
-
         // FIXME: dangerous => converting from u64 to uint, so in effect can't cache
         //        more then uint-max in memory
         let entries = Vec::from_slice(self.log.logentries.slice_from(logidx as uint));
 
         AppendEntriesRequest {
             term: self.log.term,
-            prev_log_idx: self.log.idx,
-            prev_log_term: self.log.term,
+            prev_log_idx: logidx - 1,
+            prev_log_term: self.log.logentries.get((logidx - 1) as uint).term,
             commit_idx: self.commit_idx,
             leader_id: self.id,
             entries: entries,
@@ -722,11 +698,18 @@ fn get_leader_ptr(aereq: &AppendEntriesRequest, peers: &Vec<Peer>) -> int {
 fn create_client_msg(msg: &~str) -> Option<ClientMsg> {
     let parts: ~[&str] = msg.splitn('\n', 1).collect();
     if parts.len() != 2 {
+        error!("create_client_msg: Client messge did not have at least two lines: {}", msg);
         return None;
     }
+    let uuid_toks: ~[&str] = parts[0].splitn(':', 1).collect();
+    if uuid_toks.len() != 2 {
+        error!("create_client_msg: Client messge did not have `Uuid: xxx` as its first line: {}", msg);
+        return None;
+    }
+    let uuid = uuid_toks[1].trim().to_owned();
 
     Some(ClientMsg {
-        uuid: parts[0].trim().to_owned(),
+        uuid: uuid,
         cmd:  parts[1].trim().to_owned()
     })
 }
@@ -953,14 +936,12 @@ mod test {
                                     detail: Some(format!("Invalid server id: {}", id))})
         };
 
-        // TODO: these asserts and fails are dangerous -> if another server already started the test will hang
-        // TODO: probably need to return Result<~Server, Err> instead and let the test case handle errors
-        if logpath.exists() {
-            try!(fs::unlink(&logpath));
-        }
-        if ! dirpath.exists() {
-            try!(fs::mkdir(&dirpath, io::UserRWX));
-        }
+        // if logpath.exists() {
+        //     try!(fs::unlink(&logpath));
+        // }
+        // if ! dirpath.exists() {
+        //     try!(fs::mkdir(&dirpath, io::UserRWX));
+        // }
         let server = try!(Server::new(id, Path::new(TEST_CFG), logpath));
         Ok(server)
     }
@@ -1002,6 +983,35 @@ mod test {
         timer::sleep(100);  // TODO: remove this ??
     }
 
+    ///
+    /// Params:
+    ///  - server_id: specifies which logpath file to write (datalog/S1TEST, etc.)
+    ///  - terms: list of terms specifies how many entries to write (idx 1 .. N) and the
+    ///           terms for each entry
+    ///
+    fn write_preexisting_log_entries(server_id: uint, terms: Vec<uint>) -> IoResult<()> {
+        let logpath = match server_id {
+            1 => Path::new(S1TEST_PATH),
+            2 => Path::new(S2TEST_PATH),
+            3 => Path::new(S3TEST_PATH),
+            4 => Path::new(S4TEST_PATH),
+            5 => Path::new(S5TEST_PATH),
+            _ => fail!("write_preexisting_log_entries: Unexpected server_id: {}", server_id)
+        };
+
+        let mut file = try!(File::open_mode(&logpath, Open, Write));
+
+        let mut idx = 1u64;
+        for term in terms.iter() {
+            let logentry = LogEntry{idx: idx, term: *term as u64, data: format!("PUT x = {}", idx), uuid: idx.to_str()};
+            let jstr = json::Encoder::str_encode(&logentry);
+            try!(file.write_line(jstr));
+
+            idx += 1;
+        }
+
+        Ok(())
+    }
 
     fn setup() {
         let mut filepath = Path::new(S1TEST_PATH);
@@ -1168,6 +1178,425 @@ mod test {
     }
 
     /* ---[ tests ]--- */
+
+    // scenario 3:
+    //  terms between leader and follower do not match
+    //  follower and leader must converse until a matching term/idx combo is found
+    //  follower truncates as the conversation continues
+    #[test]
+    fn test_log_repair_scenario3() {
+        setup();
+        write_cfg_file(3);
+
+        let wres = write_preexisting_log_entries(1, vec!(1,1,2,2,3,3));  // leader's log
+        if wres.is_err() {
+            fail!("{:?}", wres);
+        }
+        let wres = write_preexisting_log_entries(2, vec!(1,1,2,2,2));   // term at 5th pos mismatch
+        if wres.is_err() {
+            fail!("{:?}", wres);
+        }
+        let wres = write_preexisting_log_entries(3, vec!(1,1,1,1));     // two terms behind
+        if wres.is_err() {
+            fail!("{:?}", wres);
+        }
+
+        // start leader
+        let start_result1 = start_server(1, Some(CfgOptions{init_state: Leader}));
+        if start_result1.is_err() {
+            fail!("start_result1.is_err: {:?}", start_result1);
+        }
+        timer::sleep(20); // wait a short while for the leader to get set up and ready to msg followers
+
+        // start follower, svr 2
+        let start_result2 = start_server(2, None);
+        if start_result2.is_err() {
+            send_shutdown_signal(1);
+            fail!("start_result2.is_err: {:?}", start_result2);
+        }
+
+        // start follower, svr 3
+        let start_result3 = start_server(3, None);
+        if start_result3.is_err() {
+            send_shutdown_signal(1);
+            send_shutdown_signal(2);
+            fail!("send_result3.is_err: {:?}", start_result3);
+        }
+
+        timer::sleep(140); // wait for catch up messages to have propagated
+
+        let t1s1_datalog_res = read_datalog(S1TEST_PATH);
+        let t1s2_datalog_res = read_datalog(S2TEST_PATH);  // should have 6 entries now
+        let t1s3_datalog_res = read_datalog(S3TEST_PATH);  // should have 6 entries now
+
+        spawn(proc() {
+            send_shutdown_signal(2);
+        });
+        spawn(proc() {
+            send_shutdown_signal(3);
+        });
+        send_shutdown_signal(1);
+
+        assert!(t1s1_datalog_res.is_ok());
+        assert!(t1s2_datalog_res.is_ok());
+        assert!(t1s3_datalog_res.is_ok());
+
+        let t1s1_datalog = t1s1_datalog_res.unwrap();
+        let t1s2_datalog = t1s2_datalog_res.unwrap();
+        let t1s3_datalog = t1s3_datalog_res.unwrap();
+
+        assert_eq!(6, t1s1_datalog.len());
+        assert_eq!(6, t1s2_datalog.len());
+        assert_eq!(6, t1s3_datalog.len());
+
+        assert_eq!(t1s1_datalog, t1s2_datalog);
+        assert_eq!(t1s1_datalog, t1s3_datalog);
+    }
+
+    // scenario 2:
+    //  terms between leader and follower match
+    //  follower idx is behind leader idx
+    //  leader must send "catch up" entries
+    #[test]
+    fn test_log_repair_scenario2() {
+        setup();
+        write_cfg_file(3);
+
+        let wres = write_preexisting_log_entries(1, vec!(1,1,1,2,2,2,2));  // leader's log
+        if wres.is_err() {
+            fail!("{:?}", wres);
+        }
+        let wres = write_preexisting_log_entries(2, vec!(1,1,1,2,2,2));   // behind by 1
+        if wres.is_err() {
+            fail!("{:?}", wres);
+        }
+        let wres = write_preexisting_log_entries(3, vec!(1,1,1,2));       // behind by 3
+        if wres.is_err() {
+            fail!("{:?}", wres);
+        }
+
+        // start leader
+        let start_result1 = start_server(1, Some(CfgOptions{init_state: Leader}));
+        if start_result1.is_err() {
+            fail!("start_result1.is_err: {:?}", start_result1);
+        }
+        timer::sleep(20); // wait a short while for the leader to get set up and ready to msg followers
+
+        // start follower, svr 2
+        let start_result2 = start_server(2, None);
+        if start_result2.is_err() {
+            send_shutdown_signal(1);
+            fail!("start_result2.is_err: {:?}", start_result2);
+        }
+
+        // start follower, svr 3
+        let start_result3 = start_server(3, None);
+        if start_result3.is_err() {
+            send_shutdown_signal(1);
+            send_shutdown_signal(2);
+            fail!("send_result3.is_err: {:?}", start_result3);
+        }
+
+        timer::sleep(250);
+
+        let t1s1_datalog_res = read_datalog(S1TEST_PATH);
+        let t1s2_datalog_res = read_datalog(S2TEST_PATH);  // should have 7 entries now
+        let t1s3_datalog_res = read_datalog(S3TEST_PATH);  // should have 7 entries now
+
+        // now send another message just to test a new entry being sent out
+
+        let ldr_addr = start_result1.unwrap();
+
+        let mut stream = TcpStream::connect(ldr_addr);
+        let send_result1 = send_client_cmd(&mut stream, ~"PUT x=400");
+        if send_result1.is_err() {
+            send_shutdown_signal(1);
+            send_shutdown_signal(2);
+            fail!("send_result1.is_err: {:?}", send_result1);
+        }
+
+        let result1 = stream.read_to_str();
+        drop(stream); // close the connection
+
+        // long pause to ensure message is propagated
+        timer::sleep(150);
+
+        // read state of datalogs at t2
+        let t2s1_datalog_res = read_datalog(S1TEST_PATH);
+        let t2s2_datalog_res = read_datalog(S2TEST_PATH);
+        let t2s3_datalog_res = read_datalog(S3TEST_PATH);
+
+        spawn(proc() {
+            send_shutdown_signal(2);
+        });
+        spawn(proc() {
+            send_shutdown_signal(3);
+        });
+        send_shutdown_signal(1);
+
+        assert!(result1.is_ok());
+
+        assert!(t1s1_datalog_res.is_ok());
+        assert!(t1s2_datalog_res.is_ok());
+        assert!(t1s3_datalog_res.is_ok());
+
+        let t1s1_datalog = t1s1_datalog_res.unwrap();
+        let t1s2_datalog = t1s2_datalog_res.unwrap();
+        let t1s3_datalog = t1s3_datalog_res.unwrap();
+
+        assert_eq!(7, t1s1_datalog.len());
+        assert_eq!(7, t1s2_datalog.len());
+        assert_eq!(7, t1s3_datalog.len());
+
+        assert_eq!(t1s1_datalog, t1s2_datalog);
+        assert_eq!(t1s1_datalog, t1s3_datalog);
+
+        let t2s1_datalog = t2s1_datalog_res.unwrap();
+        let t2s2_datalog = t2s2_datalog_res.unwrap();
+        let t2s3_datalog = t2s3_datalog_res.unwrap();
+
+        assert_eq!(8, t2s1_datalog.len());
+        assert_eq!(8, t2s2_datalog.len());
+        assert_eq!(8, t2s3_datalog.len());
+
+        assert_eq!(t2s1_datalog, t2s2_datalog);
+        assert_eq!(t2s1_datalog, t2s3_datalog);
+
+        assert!(t2s3_datalog.get(7).contains("PUT x=400"));
+    }
+
+    // scenario 1:
+    //  terms between leader and follower match
+    //  follower idx is ahead of leader idx
+    //  follower should truncate log even after heartbeats only
+    #[test]
+    fn test_log_repair_scenario1() {
+        setup();
+        write_cfg_file(3);
+
+        let wres = write_preexisting_log_entries(1, vec!(1,1,1,2,2));  // leader's log
+        if wres.is_err() {
+            fail!("{:?}", wres);
+        }
+        let wres = write_preexisting_log_entries(2, vec!(1,1,1,2,2));
+        if wres.is_err() {
+            fail!("{:?}", wres);
+        }
+        let wres = write_preexisting_log_entries(3, vec!(1,1,1,2,2,2,2));  // server 3 has two entries more than leader (of same term)
+        if wres.is_err() {
+            fail!("{:?}", wres);
+        }
+
+        // start leader
+        let start_result1 = start_server(1, Some(CfgOptions{init_state: Leader}));
+        if start_result1.is_err() {
+            fail!("start_result1.is_err: {:?}", start_result1);
+        }
+        timer::sleep(20); // wait a short while for the leader to get set up and ready to msg followers
+
+        // start follower, svr 2
+        let start_result2 = start_server(2, None);
+        if start_result2.is_err() {
+            send_shutdown_signal(1);
+            fail!("start_result2.is_err: {:?}", start_result2);
+        }
+
+        // start follower, svr 3
+        let start_result3 = start_server(3, None);
+        if start_result3.is_err() {
+            send_shutdown_signal(1);
+            send_shutdown_signal(2);
+            fail!("send_result3.is_err: {:?}", start_result3);
+        }
+
+        timer::sleep(250); // wait a short while heartbeats to have propagated
+
+        let t1s1_datalog_res = read_datalog(S1TEST_PATH);
+        let t1s2_datalog_res = read_datalog(S2TEST_PATH);
+        let t1s3_datalog_res = read_datalog(S3TEST_PATH);  // should have been truncated to 5 entries
+
+        // now send another message just to test a new entry being sent out
+
+        let ldr_addr = start_result1.unwrap();
+
+        let mut stream = TcpStream::connect(ldr_addr);
+        let send_result1 = send_client_cmd(&mut stream, ~"PUT x=1");
+        if send_result1.is_err() {
+            send_shutdown_signal(1);
+            send_shutdown_signal(2);
+            fail!("send_result1.is_err: {:?}", send_result1);
+        }
+
+        let result1 = stream.read_to_str();
+        drop(stream); // close the connection
+
+        // long pause to ensure message is propagated
+        timer::sleep(150);
+
+        // read state of datalogs at t2
+        let t2s1_datalog_res = read_datalog(S1TEST_PATH);
+        let t2s2_datalog_res = read_datalog(S2TEST_PATH);
+        let t2s3_datalog_res = read_datalog(S3TEST_PATH);
+
+        spawn(proc() {
+            send_shutdown_signal(2);
+        });
+        spawn(proc() {
+            send_shutdown_signal(3);
+        });
+        send_shutdown_signal(1);
+
+        assert!(result1.is_ok());
+
+        assert!(t1s1_datalog_res.is_ok());
+        assert!(t1s2_datalog_res.is_ok());
+        assert!(t1s3_datalog_res.is_ok());
+
+        let t1s1_datalog = t1s1_datalog_res.unwrap();
+        let t1s2_datalog = t1s2_datalog_res.unwrap();
+        let t1s3_datalog = t1s3_datalog_res.unwrap();
+
+        assert_eq!(5, t1s1_datalog.len());
+        assert_eq!(5, t1s2_datalog.len());
+        assert_eq!(5, t1s3_datalog.len());
+
+        assert_eq!(t1s1_datalog, t1s2_datalog);
+        assert_eq!(t1s1_datalog, t1s3_datalog);
+
+        let t2s1_datalog = t2s1_datalog_res.unwrap();
+        let t2s2_datalog = t2s2_datalog_res.unwrap();
+        let t2s3_datalog = t2s3_datalog_res.unwrap();
+
+        assert_eq!(6, t2s1_datalog.len());
+        assert_eq!(6, t2s2_datalog.len());
+        assert_eq!(6, t2s3_datalog.len());
+
+        assert_eq!(t2s1_datalog, t2s2_datalog);
+        assert_eq!(t2s1_datalog, t2s3_datalog);
+    }
+
+    #[test]
+    fn test_log_repair_scenario2_variation_send_message_before_svr3_starts_ensure_correct_ordering() {
+        setup();
+        write_cfg_file(3);
+
+        let wres = write_preexisting_log_entries(1, vec!(1,1,1,2,2,2,2));  // leader's log
+        if wres.is_err() {
+            fail!("{:?}", wres);
+        }
+        let wres = write_preexisting_log_entries(2, vec!(1,1,1,2,2,2));   // behind by 1
+        if wres.is_err() {
+            fail!("{:?}", wres);
+        }
+        let wres = write_preexisting_log_entries(3, vec!(1,1,1,2));       // behind by 3
+        if wres.is_err() {
+            fail!("{:?}", wres);
+        }
+
+        // start leader
+        let start_result1 = start_server(1, Some(CfgOptions{init_state: Leader}));
+        if start_result1.is_err() {
+            fail!("start_result1.is_err: {:?}", start_result1);
+        }
+        timer::sleep(20); // wait a short while for the leader to get set up and ready to msg followers
+
+        // start follower, svr 2
+        let start_result2 = start_server(2, None);
+        if start_result2.is_err() {
+            send_shutdown_signal(1);
+            fail!("start_result2.is_err: {:?}", start_result2);
+        }
+
+        timer::sleep(160); // wait a short while heartbeats to have propagated
+
+        let t1s1_datalog_res = read_datalog(S1TEST_PATH);
+        let t1s2_datalog_res = read_datalog(S2TEST_PATH);  // should have 7 entries now
+        let t1s3_datalog_res = read_datalog(S3TEST_PATH);  // should have orig 4 entries
+
+        // send two messages befor svr3 is started
+
+        let ldr_addr = start_result1.unwrap();
+
+        let mut stream = TcpStream::connect(ldr_addr);
+        let send_result = send_client_cmd(&mut stream, ~"PUT x=400");
+        if send_result.is_err() {
+            send_shutdown_signal(1);
+            send_shutdown_signal(2);
+            fail!("send_result.is_err: {:?}", send_result);
+        }
+
+        let result1 = stream.read_to_str();
+        drop(stream); // close the connection
+
+        let mut stream = TcpStream::connect(ldr_addr);
+        let send_result = send_client_cmd(&mut stream, ~"PUT x=401");
+        if send_result.is_err() {
+            send_shutdown_signal(1);
+            send_shutdown_signal(2);
+            fail!("send_result.is_err: {:?}", send_result);
+        }
+
+        let result1 = stream.read_to_str();
+        drop(stream); // close the connection
+
+        // pause to ensure messages are propagated
+        timer::sleep(100);
+
+        // start follower, svr 3
+        let start_result3 = start_server(3, None);
+        if start_result3.is_err() {
+            send_shutdown_signal(1);
+            send_shutdown_signal(2);
+            fail!("send_result3.is_err: {:?}", start_result3);
+        }
+
+        // pause to get svr3 caught up
+        timer::sleep(250);
+
+        // read state of datalogs at t2
+        let t2s1_datalog_res = read_datalog(S1TEST_PATH);
+        let t2s2_datalog_res = read_datalog(S2TEST_PATH);
+        let t2s3_datalog_res = read_datalog(S3TEST_PATH);
+
+        spawn(proc() {
+            send_shutdown_signal(2);
+        });
+        spawn(proc() {
+            send_shutdown_signal(3);
+        });
+        send_shutdown_signal(1);
+
+        assert!(result1.is_ok());
+
+        assert!(t1s1_datalog_res.is_ok());
+        assert!(t1s2_datalog_res.is_ok());
+        assert!(t1s3_datalog_res.is_ok());
+
+        let t1s1_datalog = t1s1_datalog_res.unwrap();
+        let t1s2_datalog = t1s2_datalog_res.unwrap();
+        let t1s3_datalog = t1s3_datalog_res.unwrap();
+
+        assert_eq!(7, t1s1_datalog.len());
+        assert_eq!(7, t1s2_datalog.len()); // failing: 6, not 7
+        assert_eq!(4, t1s3_datalog.len());
+
+        assert_eq!(t1s1_datalog, t1s2_datalog);
+
+        let t2s1_datalog = t2s1_datalog_res.unwrap();
+        let t2s2_datalog = t2s2_datalog_res.unwrap();
+        let t2s3_datalog = t2s3_datalog_res.unwrap();
+
+        assert_eq!(9, t2s1_datalog.len());
+        assert_eq!(9, t2s2_datalog.len());
+        assert_eq!(9, t2s3_datalog.len());
+
+        assert_eq!(t2s1_datalog, t2s2_datalog);
+        assert_eq!(t2s1_datalog, t2s3_datalog);
+
+        assert!(t2s3_datalog.get(7).contains("PUT x=400"));
+        assert!(t2s3_datalog.get(8).contains("PUT x=401"));
+    }
+
     #[test]
     fn test_leader_with_2_followers_both_active() {
         setup();
@@ -1259,11 +1688,10 @@ mod test {
 
     // this one won't work until we build in the "catch-up"/repair mechanism for a
     // leader to resend messages to an out of date follower
-    #[test]
+    //#[test]
     fn test_leader_with_2_followers_with_one_active_first_then_second_joins_later() {
         // FILL IN
     }
-
 
     #[test]
     fn test_leader_with_4_followers_being_hit_by_multiple_clients_simultaneously() {
@@ -1413,7 +1841,7 @@ mod test {
 
     // one follower experiences "network partition" phase, but since 2/3 of cluster still
     // up the commits should still happen
-    // #[test]
+    #[test]
     fn test_leader_with_2_followers_initially_then_lose_1() {
         setup();
         write_cfg_file(3);
@@ -1571,7 +1999,7 @@ mod test {
     // once majority committed logic is added this will hang since the client
     // won't get a response  => perhaps have to build in a timeout to respond
     // to the client if can't commit within 2 seconds or something?
-    // #[test]
+    // //#[test]
     fn test_leader_simple() {
         // setup();
         // write_cfg_file(1);
@@ -1657,7 +2085,7 @@ mod test {
         if start_result.is_err() {
             fail!("{:?}", start_result);
         }
-        timer::sleep(350); // wait a short while for the leader to get set up and listening on its socket
+        timer::sleep(260); // wait a short while for the leader to get set up and listening on its socket
 
         let addr = start_result.unwrap();
         let mut stream = TcpStream::connect(addr);
@@ -1753,7 +2181,7 @@ mod test {
         if start_result.is_err() {
             fail!("{:?}", start_result);
         }
-        timer::sleep(350); // wait a short while for the leader to get set up and listening on its socket
+        timer::sleep(100); // wait a short while for the leader to get set up and listening on its socket
 
         let addr = start_result.unwrap();
 
@@ -1861,88 +2289,6 @@ mod test {
         assert!(br.read_line().is_err());
     }
 
-
-    // REMOVE ME !!!!!!!!!!!
-    // #[test]
-    // fn test_follower_with_same_AppendEntryRequest_twice_should_return_false_2nd_time() {
-    //     setup();
-    //     write_cfg_file(1);
-
-    //     let svr_id = 1;
-    //     let start_result = start_server(svr_id, None);
-    //     if start_result.is_err() {
-    //         fail!("{:?}", start_result);
-    //     }
-    //     timer::sleep(350); // wait a short while for the leader to get set up and listening on its socket
-
-    //     let addr = start_result.unwrap();
-    //     let mut stream = TcpStream::connect(addr);
-
-    //     // test case task acts as leader sending AEReq
-
-    //     /* ---[ send logentry1 (term1) ]--- */
-
-    //     let logentry1 = send_aereq1(&mut stream);
-    //     let result1 = stream.read_to_str();
-    //     drop(stream); // close the connection
-
-
-    //     /* ---[ send logentry1 again (term1) ]--- */
-
-    //     stream = TcpStream::connect(addr);
-    //     let _ = send_aereq1(&mut stream);
-    //     let result2 = stream.read_to_str();
-    //     drop(stream); // close the connection
-
-    //     send_shutdown_signal(svr_id);
-
-    //     /* ---[ validate results ]--- */
-
-    //     // validate response => result 1 should be success = true
-
-    //     assert!(result1.is_ok());
-    //     let resp = result1.unwrap();
-
-    //     assert!(resp.contains("\"success\":true"));
-    //     let aeresp = append_entries::decode_append_entries_response(resp).unwrap();
-    //     assert_eq!(1, aeresp.term);
-    //     assert_eq!(1, aeresp.idx);
-    //     assert_eq!(1, aeresp.peer_id);
-    //     assert_eq!(super::UNKNOWN, aeresp.commit_idx);  // since no ldr has established any commits is UNKNOWN
-    //     assert_eq!(true, aeresp.success);
-
-
-    //     // result 2 should be success = false
-
-    //     assert!(result2.is_ok());
-    //     let resp2 = result2.unwrap();
-
-    //     assert!(resp2.contains("\"success\":false"));
-    //     let aeresp2 = append_entries::decode_append_entries_response(resp).unwrap();
-    //     assert_eq!(1, aeresp2.term);
-    //     assert_eq!(1, aeresp2.idx);
-    //     assert_eq!(1, aeresp.peer_id);
-    //     assert_eq!(super::UNKNOWN, aeresp.commit_idx);  // since no ldr has established any commits is UNKNOWN
-    //     assert_eq!(true, aeresp2.success);
-
-
-    //     // validate that response was written to disk
-    //     let filepath = Path::new(S1TEST_PATH);
-    //     assert!(filepath.exists());
-
-    //     // read in first entry and make sure it matches the logentry sent in the AEReq
-    //     let mut br = BufferedReader::new(File::open(&filepath));
-    //     let mut readres = br.read_line();
-    //     assert!(readres.is_ok());
-
-    //     let line = readres.unwrap().trim().to_owned();
-    //     let exp_str = json::Encoder::str_encode(&logentry1);
-    //     assert_eq!(exp_str, line);
-
-    //     // should only be one entry in the file
-    //     readres = br.read_line();
-    //     assert!(readres.is_err());
-    // }
 
     #[test]
     fn test_follower_with_multiple_valid_AppendEntryRequests() {
@@ -2085,7 +2431,7 @@ mod test {
         if start_result.is_err() {
             fail!("{:?}", start_result);
         }
-        timer::sleep(350); // wait a short while for the leader to get set up and listening on its socket
+        timer::sleep(120); // wait a short while for the leader to get set up and listening on its socket
 
         let addr = start_result.unwrap();
         let mut stream = TcpStream::connect(addr);
@@ -2136,7 +2482,7 @@ mod test {
 
         // number in logfile after each AER
         assert_eq!(2, num_entries_logged1);
-        assert_eq!(1, num_entries_logged2);  // one entry truncated bcs t1_idx2 != t2_idx2
+        assert_eq!(1, num_entries_logged2);   // since prev_log_term > follower-term, it truncated one entry
         assert_eq!(3, num_entries_logged3);  // two added
 
         // result 1

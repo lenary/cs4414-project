@@ -1,8 +1,10 @@
 extern crate rand;
 extern crate serialize;
 
-use std::io::{BufferedReader,BufferedWriter,File,IoResult,IoError,InvalidInput,EndOfFile,Append,Open,Read,Write};
+use std::io::{BufferedReader,BufferedWriter,File,IoResult,IoError,InvalidInput,Append,Open,Read,Write};
 use std::io::fs;
+use std::fmt;
+use std::fmt::Show;
 use std::vec::Vec;
 
 use serialize::json;
@@ -26,33 +28,55 @@ pub struct Log {
     pub logentries: Vec<LogEntry>,  // cache of all entries logged to file (TODO: future keep only last 100? 1000?)
 }
 
+impl Show for Log {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f.buf, "Log: path: {}; idx: {}; term: {}: logentries-length: {}",
+               self.path.display().to_str(), self.idx, self.term, self.logentries.len())
+    }
+}
+
 impl Log {
     pub fn new(path: Path) -> IoResult<~Log> {
-        let mut start_idx = 0;
+        let mut last_idx = 0;
         let mut term = 0;
-        if path.exists() {
-            let last_entry = try!(read_last_entry(&path));
-            match log_entry::decode_log_entry(last_entry) {
-                Ok(logentry) => {
-                    start_idx = logentry.idx;
-                    term = logentry.term;
-                },
-                Err(_) => ()
-            }
+        let logentries = if path.exists() {
+            try!(read_entries_from_disk(&path))
+        } else {
+            let mut v: Vec<LogEntry> = Vec::with_capacity(4096);
+            v.push(Log::zeroth_entry());
+            v
+        };
+
+        if logentries.len() > 0 {
+            let lastentry = logentries.get(logentries.len() - 1);
+            last_idx = lastentry.idx;
+            term = lastentry.term;
         }
 
         // TODO: will need a log rotation strategy later
         let file = try!(File::open_mode(&path, Append, Write));
 
-        let lg = ~Log {
-            file: file,
-            path: path,
-            idx: start_idx,
-            term: term,
-            logentries: Vec::with_capacity(4096),
-        };
+        Ok(~Log {
+             file: file,
+             path: path,
+             idx: last_idx,
+             term: term,
+             logentries: logentries
+        })
+    }
 
-        Ok(lg)
+    ///
+    /// Raft indexes and terms start at 1 - the zeroth entry means "not started" or "unknown"
+    /// so to make indexing easier, a dummy zeroth entry is put into the in-memory log -
+    /// but not written to disk
+    ///
+    fn zeroth_entry() -> LogEntry {
+        LogEntry {
+            idx:  0,
+            term: 0,
+            data: ~"DUMMY",
+            uuid: ~"DUMMY",
+        }
     }
 
     ///
@@ -62,26 +86,30 @@ impl Log {
     ///
     pub fn append_entries(&mut self, aereq: &AppendEntriesRequest) -> IoResult<()> {
         if aereq.prev_log_idx < self.idx {
+            let orig_self_idx = self.idx;
             try!(self.truncate(aereq.prev_log_idx + 1));
             return Err(IoError{kind: InvalidInput,
                                desc: "prev_log_idx < self.log.idx mismatch",
-                               detail: Some(format!("aereq.prev_log_idx: {:u}; folower log idx {:u}",
-                                                    aereq.prev_log_idx, self.idx))});
+                               detail: Some(format!("aereq.prev_log_idx: {:u}; follower log idx {:u}",
+                                                    aereq.prev_log_idx, orig_self_idx))});
         }
 
         if aereq.prev_log_idx > self.idx {
             return Err(IoError{kind: InvalidInput,
-                               desc: "prev_log_idx < self.log.idx mismatch",
-                               detail: Some(format!("aereq.prev_log_idx: {:u}; folower log idx {:u}",
+                               desc: "prev_log_idx > self.log.idx mismatch",
+                               detail: Some(format!("aereq.prev_log_idx: {:u}; follower log idx {:u}",
                                                     aereq.prev_log_idx, self.idx))});
         }
 
-        /////////////
+        // if get here prev_log_idx == self.idx
         if aereq.prev_log_term != self.term && self.term != 0 {
-            try!(self.truncate(aereq.prev_log_term));
+            if aereq.prev_log_term > self.term {
+                try!(self.truncate(aereq.prev_log_idx));
+            }
             return Err(IoError{kind: InvalidInput,
                                desc: "term mismatch at prev_log_idx",
-                               detail: Some(format!("term in follower is {:u}", self.term))});
+                               detail: Some(format!("aereq.term: {:u}; follower term {:u}",
+                                                    aereq.prev_log_term, self.term))});
         }
         for e in aereq.entries.iter() {
             try!(self.append_entry(e));
@@ -118,7 +146,6 @@ impl Log {
         self.idx = entry.idx;
         self.term = entry.term;
         self.logentries.push(entry.clone());
-        // self.logentries.push(LogEntry{idx: entry.idx, term: entry.term, data: entry.data.to_owned(), uuid: entry.uuid.to_owned()});
 
         Ok(())
     }
@@ -134,6 +161,7 @@ impl Log {
         let tmppath = Path::new(format!("{}-{:u}", self.path.display(), r));
 
         {
+            // FIXME: don't have to read in from file anymore now that it is all cached in memory
             let file = try!(File::open_mode(&self.path, Open, Read));
             let tmpfile = try!(File::open_mode(&tmppath, Open, Write));
 
@@ -157,7 +185,7 @@ impl Log {
         // truncate in-memory term/idx vector
         // NOTE: assumes we keep all log entries in place => otherwise have to offset by first idx entry in logentries
         // FIXME: dangerous => converting u64 to uint, so can only cache up to uint entries
-        let truncate_idx = (entry_idx - 1) as uint;  // have to subtract bcs idx is 1-based, not 0-based
+        let truncate_idx = entry_idx as uint;  // have to subtract bcs idx is 1-based, not 0-based
         if truncate_idx < self.logentries.len() {
             self.logentries.truncate(truncate_idx);
         }
@@ -181,19 +209,28 @@ impl Log {
     }
 }
 
-fn read_last_entry(path: &Path) -> IoResult<~str> {
+fn read_entries_from_disk(path: &Path) -> IoResult<Vec<LogEntry>> {
     let file = try!(File::open(path));
     let mut br = BufferedReader::new(file);
 
-    let mut last_line: ~str = ~"";
-    loop {
-        match br.read_line() {
-            Ok(ln) => last_line = ln,
-            Err(ref e) if e.kind == EndOfFile => break,
-            Err(e) => return Err(e)
+    let mut entries: Vec<LogEntry> = Vec::with_capacity(4096);
+    entries.push(Log::zeroth_entry());
+    for ln in br.lines() {
+        match ln {
+            Ok(line) => {
+                match log_entry::decode_log_entry(line) {
+                    Ok(logentry) => entries.push(logentry),
+                    Err(e) => return Err(IoError{kind: InvalidInput,
+                                                 desc: "log.read_entries_from_disk: Logentry parsing error",
+                                                 detail: Some(format!("{:?}",e))})
+                }
+            },
+            Err(e) => return Err(IoError{kind: InvalidInput,
+                                         desc: "log.read_entries_from_disk: log file read error",
+                                         detail: Some(format!("path: {}. Error: {:?}", path.display().to_str(), e))})
         }
     }
-    Ok(last_line)
+    Ok(entries)
 }
 
 
@@ -223,7 +260,7 @@ mod test {
         count
     }
 
-    #[test]
+    //#[test]
     fn test_truncate() {
         cleanup();
         // need to write some logs first
