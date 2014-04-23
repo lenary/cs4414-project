@@ -10,15 +10,30 @@ pub use self::traits::RaftEvent;
 // and parts)
 pub use self::append_entries::{AppendEntriesReq, AppendEntriesRes};
 pub use self::vote::{VoteReq, VoteRes};
+pub use self::handoff::{HandoffReq, HandoffRes};
 
 // Application-level Messages
-pub use self::application::{ApplicationReq, ApplicationRes, HandoffReq, HandoffRes};
+pub use self::application::{ApplicationReq, ApplicationRes};
 
 mod traits; // Annoyingly can't be called "trait" because keyword
 mod append_entries;
 mod vote;
+mod handoff;
 mod application;
 
-// This feels like a terrible hack, but we should keep it for the moment
-pub struct StopReq;
-impl RaftEvent for StopReq {}
+// We have to wrap the RaftEvents in this EventMsg to send them all
+// down the same channel.
+pub enum RaftPeerMsg {
+    ARQ(AppendEntriesReq),
+    ARS(AppendEntriesRes),
+    VRQ(VoteReq),
+    VRS(VoteRes),
+    HRQ(HandoffReq),
+    HRS(HandoffRes),
+    StopReq,
+}
+
+pub enum RaftAppMsg {
+    APRQ(ApplicationReq),
+    APRS(ApplicationRes)
+}
