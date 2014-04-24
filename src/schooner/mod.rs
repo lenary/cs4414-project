@@ -32,9 +32,7 @@ mod consistent_log;
 mod net;
 
 mod traits;
-mod machine;
 mod server;
-
 mod leader;
 mod candidate;
 mod follower;
