@@ -1,11 +1,12 @@
 
-use super::traits::RaftState;
-use super::Server;
+use super::traits::{RaftState, RaftStateTransition, NextState, Continue};
+use super::traits::{RaftNextState, RaftLeader, RaftCandidate};
 
-pub struct Follower; //{
-    // server: ~Server,
-    // TODO: What other fields?
-//}
+use super::leader::Leader;
+use super::candidate::Candidate;
+
+pub struct Follower; // TODO: What fields?
+
 
 impl Follower {
     pub fn new() -> Follower {
@@ -14,5 +15,4 @@ impl Follower {
 }
 
 // TODO: Fill this out with real implementations
-impl RaftState for Follower {
-}
+impl RaftState for Follower { }

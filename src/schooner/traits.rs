@@ -68,6 +68,17 @@ pub trait RaftState {
     }
 
 
+    // This Peer has just recieved an Application Request. Handle the
+    // Request here.
+    fn handle_application_req(&mut self, _req: ApplicationReq) -> RaftStateTransition {
+        Continue
+    }
+
+    fn handle_application_res(&mut self, _res: ApplicationRes) -> RaftStateTransition {
+        Continue
+    }
+
+
     // A Peer (that thinks This Peer is the Leader) has forwarded an
     // Application Request to the Current Peer. Handle it here.
     // TODO: Can we abandon this, and just use `handle_application_req`?
@@ -79,16 +90,6 @@ pub trait RaftState {
     // thought was the Leader, and has got a Response. Handle the
     // response here.
     fn handle_handoff_res(&mut self, _req: HandoffRes) -> RaftStateTransition {
-        Continue
-    }
-
-    // This Peer has just recieved an Application Request. Handle the
-    // Request here.
-    fn handle_application_req(&mut self, _req: ApplicationReq) -> RaftStateTransition {
-        Continue
-    }
-
-    fn handle_application_res(&mut self, _res: ApplicationRes) -> RaftStateTransition {
         Continue
     }
 }
@@ -141,19 +142,19 @@ impl RaftState for RaftNextState {
         transition_proxy!(handle_vote_res, res)
     }
 
-    fn handle_handoff_req(&mut self, req: HandoffReq) -> RaftStateTransition {
-        transition_proxy!(handle_handoff_req, req)
-    }
-
-    fn handle_handoff_res(&mut self, res: HandoffRes) -> RaftStateTransition {
-        transition_proxy!(handle_handoff_res, res)
-    }
-
     fn handle_application_req(&mut self, req: ApplicationReq) -> RaftStateTransition {
         transition_proxy!(handle_application_req, req)
     }
 
     fn handle_application_res(&mut self, res: ApplicationRes) -> RaftStateTransition {
         transition_proxy!(handle_application_res, res)
+    }
+
+    fn handle_handoff_req(&mut self, req: HandoffReq) -> RaftStateTransition {
+        transition_proxy!(handle_handoff_req, req)
+    }
+
+    fn handle_handoff_res(&mut self, res: HandoffRes) -> RaftStateTransition {
+        transition_proxy!(handle_handoff_res, res)
     }
 }
