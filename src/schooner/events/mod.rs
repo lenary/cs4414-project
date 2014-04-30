@@ -8,15 +8,15 @@ pub use self::traits::RaftEvent;
 // Raft-level Messages
 // TODO:At some point we may need events for cluster changes (eg joins
 // and parts)
-pub use self::append_entries::{AppendEntriesReq, AppendEntriesRes};
 pub use self::vote::{VoteReq, VoteRes};
 pub use self::handoff::{HandoffReq, HandoffRes};
 
 // Application-level Messages
 pub use self::application::{ApplicationReq, ApplicationRes};
+pub use self::append_entries::{AppendEntriesReq, AppendEntriesRes};
 
 mod traits; // Annoyingly can't be called "trait" because keyword
-mod append_entries;
+pub mod append_entries;
 mod vote;
 mod handoff;
 mod application;

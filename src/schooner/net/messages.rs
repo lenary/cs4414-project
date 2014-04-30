@@ -2,15 +2,28 @@ use std::str;
 use std::io::net::ip::SocketAddr;
 use std::io::net::tcp::{TcpListener,TcpStream};
 use std::io::Acceptor;
+use std::io::IoError;
 use std::io::{BufferedReader,InvalidInput,IoError,IoResult,Listener};
-use serialize::json::Encoder;
-use serialize::Encodable;
+use serialize::{Encodable,Decodable};
+use serialize::json;
+use serialize::json::{Encoder,Decoder,Error};
 use super::super::Event;
+use super::super::events::append_entries::{AppendEntriesReq, AppendEntriesRes};
 
 static STOP_MSG: &'static str = "STOP";
 
 pub fn serialize<'a, T: Encodable<Encoder<'a>, IoError>>(to_encode_object: &T) -> ~str {
     Encoder::str_encode(to_encode_object)
+}
+
+pub fn deserialize(s: &str) -> Result<AppendEntriesRes, json::Error> {
+    match json::from_str(s) {
+        Ok(jobj) => {
+            let mut decoder = Decoder::new(jobj);
+            Decodable::decode(&mut decoder)
+        },
+        Err(e) => Err(e)
+    }
 }
 
 /// The network listener sets up a socket listener loop to accept incoming TCP connections.

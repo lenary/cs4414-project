@@ -3,9 +3,9 @@ use std::io::net::tcp::TcpStream;
 use std::io::IoResult;
 use std::io::net::ip::SocketAddr;
 use super::peer::Peer;
-use super::super::append_entries::{AppendEntriesRequest,AppendEntriesResponse};
+use super::super::events::append_entries::{AppendEntriesReq,AppendEntriesRes};
 
-pub fn leader_peer_handler(peer: Peer, chsend: Sender<IoResult<AppendEntriesResponse>>, aereq: AppendEntriesRequest) {
+pub fn leader_peer_handler(peer: Peer, chsend: Sender<IoResult<AppendEntriesRes>>, aereq: AppendEntriesReq) {
     info!("LEADER PEER_HANDLER for peer {:?}", peer.id);
     let ipaddr = format!("{}:{:u}", &peer.ip, peer.tcpport);
     let addr = from_str::<SocketAddr>(ipaddr).unwrap();
@@ -23,7 +23,6 @@ pub fn leader_peer_handler(peer: Peer, chsend: Sender<IoResult<AppendEntriesResp
     }
     let _ = stream.flush();
     debug!("PHDLR DEBUG 890 for peer: {}", peer.id);
-    // FIXME: this is a blocking call => how avoid an eternal wait?
 
     // fn read(&mut self, buf: &mut [u8]) -> IoResult<uint>
     // let mut buf: Vec<u8> = Vec::from_elem(1, 0u8);
@@ -35,7 +34,7 @@ pub fn leader_peer_handler(peer: Peer, chsend: Sender<IoResult<AppendEntriesResp
 
     match response {
         Ok(aeresp_str) => {
-            let aeresp = AppendEntriesResponse::decode(aeresp_str).
+            let aeresp = AppendEntriesRes::decode(aeresp_str).
                 ok().expect(format!("leader_peer_handler: decode aeresp failed for: {:?}", aeresp_str));
             chsend.send(Ok(aeresp));
         },

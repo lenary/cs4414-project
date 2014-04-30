@@ -23,7 +23,7 @@ use sync::TaskPool;
 
 use self::consistent_log::{Log,LogEntry};
 use self::net::*;
-use self::append_entries::{AppendEntriesRequest,AppendEntriesResponse};
+use self::events::append_entries::{AppendEntriesReq,AppendEntriesRes};
 
 use net::handlers::leader_peer_handler;
 use net::messages::{network_listener, is_stop_msg, serialize};
@@ -37,8 +37,6 @@ mod candidate;
 mod follower;
 
 // TODO: find a better place for this
-mod append_entries;
-
 
 pub static DEFAULT_HEARTBEAT_INTERVAL: u64 =  50; // millis
 pub static DEFAULT_ELECTION_TIMEOUT  : u64 = 150; // millis
@@ -272,7 +270,7 @@ impl Server {
                     ev.ch.send( self.redirect_msg() );
 
                 } else {
-                    let result = append_entries::AppendEntriesRequest::decode(ev.msg);
+                    let result = AppendEntriesReq::decode(ev.msg);
                     if result.is_err() {
                         fail!("ERROR: Unable to decode msg into append_entry_request: {}.\nError is: {:?}", ev.msg, result.err());
                     }
@@ -285,7 +283,7 @@ impl Server {
                             if aereq.commit_idx > self.commit_idx {
                                 self.commit_idx = cmp::min(aereq.commit_idx, self.log.idx);
                             }
-                            AppendEntriesResponse{success: true,
+                            AppendEntriesRes{success: true,
                                                   term: self.log.term,
                                                   idx: self.log.idx,
                                                   commit_idx: self.commit_idx,
@@ -293,7 +291,7 @@ impl Server {
                         },
                         Err(e) => {
                             error!("server.follower_loop: ERROR {:?}", e);
-                            AppendEntriesResponse{success: false,
+                            AppendEntriesRes{success: false,
                                                   term: self.log.term,
                                                   idx: self.log.idx,
                                                   commit_idx: self.commit_idx,
@@ -320,8 +318,8 @@ impl Server {
             proc(id: uint) -> uint { id }
         });
 
-        let (chsend_response, chrecv_response): (Sender<IoResult<AppendEntriesResponse>>,
-                                                 Receiver<IoResult<AppendEntriesResponse>>) = channel();
+        let (chsend_response, chrecv_response): (Sender<IoResult<AppendEntriesRes>>,
+                                                 Receiver<IoResult<AppendEntriesRes>>) = channel();
 
         // execute the peer handler tasks for the first heartbeat
         let first_heartbeat_msg = self.make_aereq_from_client_msg(Vec::new());
@@ -402,11 +400,11 @@ impl Server {
 
     ///
     /// TODO: DOCUMENT ME
-    /// Returns Some(AppendEntriesResponse) if the IoResult was not an error, otherwise returns None
+    /// Returns Some(AppendEntriesRes) if the IoResult was not an error, otherwise returns None
     ///
-    fn ldr_process_aeresponse_from_peer(&mut self, resp: IoResult<AppendEntriesResponse>,
+    fn ldr_process_aeresponse_from_peer(&mut self, resp: IoResult<AppendEntriesRes>,
                                         pool: &mut TaskPool<uint>,
-                                        chsend_response: &Sender<IoResult<AppendEntriesResponse>>) -> Option<AppendEntriesResponse> {
+                                        chsend_response: &Sender<IoResult<AppendEntriesRes>>) -> Option<AppendEntriesRes> {
         match resp {
             Ok(aeresp) => {
                 let peer_idx = get_peer_idx(&self.peers, aeresp.peer_id);
@@ -472,13 +470,13 @@ impl Server {
         }
     }
 
-    fn response_is_for_current_client_cmd(&self, aeresp: &AppendEntriesResponse) -> bool {
+    fn response_is_for_current_client_cmd(&self, aeresp: &AppendEntriesRes) -> bool {
         aeresp.idx == self.log.idx + 1  // +1 bcs server doesn't log cmd until (majority-1) peers have
     }
 
     fn ldr_send_heartbeat(&mut self,
                           pool: &mut TaskPool<uint>,
-                          chsend_response: &Sender<IoResult<AppendEntriesResponse>>) {
+                          chsend_response: &Sender<IoResult<AppendEntriesRes>>) {
         info!("LDR: INFO 301: sending hearbeat via peer_handlers");
         let hearbeat_aereq = self.make_aereq_from_client_msg(Vec::new());
 
@@ -498,8 +496,8 @@ impl Server {
     ///
     fn ldr_process_cmd_from_client(&mut self, ev: &~Event,
                                    pool: &mut TaskPool<uint>,
-                                   chsend_response: &Sender<IoResult<AppendEntriesResponse>>,
-                                   chrecv_response: &Receiver<IoResult<AppendEntriesResponse>>) {
+                                   chsend_response: &Sender<IoResult<AppendEntriesRes>>,
+                                   chrecv_response: &Receiver<IoResult<AppendEntriesRes>>) {
         info!("LDR: INFO 201: msg from client: {}", ev.msg);
         match create_client_msg(&ev.msg) {
             None            => ev.ch.send(~"400 Bad Request"),
@@ -576,7 +574,7 @@ impl Server {
         }
     }
 
-    fn ldr_append_to_log_and_send_client_response(&mut self, aereq: &AppendEntriesRequest, ev: &~Event) {
+    fn ldr_append_to_log_and_send_client_response(&mut self, aereq: &AppendEntriesReq, ev: &~Event) {
         // commit to own log and send response
         match self.log.append_entries(aereq) {
             Ok(_)  => {
@@ -601,14 +599,14 @@ impl Server {
     /// Crates an AERequest with already logged entries starting from `logidx`
     /// in the Log cache.
     ///
-    fn make_aereq_from_log(&mut self, logidx: u64) -> AppendEntriesRequest {
+    fn make_aereq_from_log(&mut self, logidx: u64) -> AppendEntriesReq {
         // let mut entries: Vec<LogEntry> = Vec::with_capacity((self.log.idx - logidx) as uint);
 
         // FIXME: dangerous => converting from u64 to uint, so in effect can't cache
         //        more then uint-max in memory
         let entries = Vec::from_slice(self.log.logentries.slice_from(logidx as uint));
 
-        AppendEntriesRequest {
+        AppendEntriesReq {
             term: self.log.term,
             prev_log_idx: self.log.idx,
             prev_log_term: self.log.term,
@@ -623,7 +621,7 @@ impl Server {
     /// Called by Leader to send AEReqs to followers.
     /// To send a heartbeat message, pass in an empty vector.
     ///
-    fn make_aereq_from_client_msg(&mut self, entry_msgs: Vec<ClientMsg>) -> AppendEntriesRequest {
+    fn make_aereq_from_client_msg(&mut self, entry_msgs: Vec<ClientMsg>) -> AppendEntriesReq {
         let mut entries: Vec<LogEntry> = Vec::with_capacity(entry_msgs.len());
         let mut count = 0u64;
         for cmsg in entry_msgs.move_iter() {
@@ -634,7 +632,7 @@ impl Server {
                                 uuid: cmsg.uuid};
             entries.push(ent);
         }
-        AppendEntriesRequest {
+        AppendEntriesReq {
             term: self.log.term,
             prev_log_idx: self.log.idx,
             prev_log_term: self.log.term,
@@ -687,7 +685,7 @@ fn get_peer_idx(peers: &Vec<Peer>, id: uint) -> int {
 /// that has the leader_id in the AEReq.  If no peer matches the leader_id
 /// in AEReq, UNKNOWN_LDR (-1) is returned.
 ///
-fn get_leader_ptr(aereq: &AppendEntriesRequest, peers: &Vec<Peer>) -> int {
+fn get_leader_ptr(aereq: &AppendEntriesReq, peers: &Vec<Peer>) -> int {
     for i in range(0, peers.len()) {
         if peers.get(i).id == aereq.leader_id {
             return i as int;
@@ -721,7 +719,7 @@ fn create_client_msg(msg: &~str) -> Option<ClientMsg> {
 
 
 fn is_aereq_from_another_leader(msg: &~str) -> bool {
-    // TODO: implement detection of whether the message is an AppendEntriesRequest
+    // TODO: implement detection of whether the message is an AppendEntriesReq
     false  // BOGUS
 }
 
@@ -752,8 +750,8 @@ mod test {
     use super::Leader;
     use super::Server;
 
-    use super::append_entries;
-    use super::append_entries::AppendEntriesRequest;
+    use super::events::append_entries::{AppendEntriesReq,AppendEntriesRes};
+    use super::net::messages::{serialize,deserialize};
     use super::consistent_log::LogEntry;
 
     static TEST_CFG      : &'static str = "server.test.config";
@@ -908,7 +906,7 @@ mod test {
             }
         }
 
-        let aereq = ~AppendEntriesRequest{
+        let aereq = ~AppendEntriesReq{
             term: *term_vec.get( term_vec.len() - 1 ),
             prev_log_idx: prev_log_idx,
             prev_log_term: prev_log_term,
@@ -932,7 +930,7 @@ mod test {
     fn send_aereq_heartbeat(stream: &mut IoResult<TcpStream>, term: u64,
                             prev_log_idx: u64, prev_log_term: u64, commit_idx: u64) {
 
-        let aereq = ~AppendEntriesRequest{
+        let aereq = ~AppendEntriesReq{
             term: term,
             prev_log_idx: prev_log_idx,
             prev_log_term: prev_log_term,
@@ -995,7 +993,7 @@ mod test {
         };
 
         let entries: Vec<LogEntry> = vec!(logentry1.clone());
-        let aereq = ~AppendEntriesRequest{
+        let aereq = ~AppendEntriesReq{
             term: 1,
             prev_log_idx: 0,
             prev_log_term: 0,
@@ -1580,7 +1578,7 @@ mod test {
         let resp = result1.unwrap();
 
         assert!(resp.contains("\"success\":true"));
-        let aeresp = append_entries::AppendEntriesResponse::decode(resp).unwrap();
+        let aeresp = deserialize(resp).unwrap();
         assert_eq!(1, aeresp.term);
         assert_eq!(1, aeresp.idx);
         assert_eq!(1, aeresp.peer_id);
@@ -1666,7 +1664,7 @@ mod test {
         assert!(result1.is_ok());
         let resp = result1.unwrap();
 
-        let aeresp = append_entries::AppendEntriesResponse::decode(resp).unwrap();
+        let aeresp = deserialize(resp).unwrap();
         assert_eq!(true, aeresp.success);
         assert_eq!(1, aeresp.term);
         assert_eq!(3, aeresp.idx);
@@ -1679,7 +1677,7 @@ mod test {
         assert!(result2.is_ok());
         let resp2 = result2.unwrap();
 
-        let aeresp2 = append_entries::AppendEntriesResponse::decode(resp2).unwrap();
+        let aeresp2 = deserialize(resp2).unwrap();
         assert_eq!(false, aeresp2.success);
         assert_eq!(1, aeresp2.term);
         assert_eq!(2, aeresp2.idx);        // this has dropped to 2
@@ -1692,7 +1690,7 @@ mod test {
         assert!(result3.is_ok());
         let resp3 = result3.unwrap();
 
-        let aeresp3 = append_entries::AppendEntriesResponse::decode(resp3).unwrap();
+        let aeresp3 = deserialize(resp3).unwrap();
         assert_eq!(true, aeresp3.success);
         assert_eq!(1, aeresp3.term);
         assert_eq!(2, aeresp3.idx);
@@ -1766,7 +1764,7 @@ mod test {
     //     let resp = result1.unwrap();
 
     //     assert!(resp.contains("\"success\":true"));
-    //     let aeresp = append_entries::AppendEntriesResponse::decode(resp).unwrap();
+    //     let aeresp = deserialize(resp).unwrap();
     //     assert_eq!(1, aeresp.term);
     //     assert_eq!(1, aeresp.idx);
     //     assert_eq!(1, aeresp.peer_id);
@@ -1780,7 +1778,7 @@ mod test {
     //     let resp2 = result2.unwrap();
 
     //     assert!(resp2.contains("\"success\":false"));
-    //     let aeresp2 = append_entries::AppendEntriesResponse::decode(resp).unwrap();
+    //     let aeresp2 = deserialize(resp).unwrap();
     //     assert_eq!(1, aeresp2.term);
     //     assert_eq!(1, aeresp2.idx);
     //     assert_eq!(1, aeresp.peer_id);
@@ -1839,7 +1837,7 @@ mod test {
         let resp = result1.unwrap();
 
         assert!(resp.contains("\"success\":true"));
-        let aeresp = append_entries::AppendEntriesResponse::decode(resp).unwrap();
+        let aeresp = deserialize(resp).unwrap();
         assert_eq!(true, aeresp.success);
         assert_eq!(1, aeresp.term);
         assert_eq!(4, aeresp.idx);
@@ -1905,7 +1903,7 @@ mod test {
         let resp = result1.unwrap();
 
         assert!(resp.contains("\"success\":true"));
-        let aeresp = append_entries::AppendEntriesResponse::decode(resp).unwrap();
+        let aeresp = deserialize(resp).unwrap();
         assert_eq!(true, aeresp.success);
         assert_eq!(1, aeresp.term);
         assert_eq!(1, aeresp.idx);
@@ -1917,7 +1915,7 @@ mod test {
         let resp = result2.unwrap();
 
         assert!(resp.contains("\"success\":true"));
-        let aeresp = append_entries::AppendEntriesResponse::decode(resp).unwrap();
+        let aeresp = deserialize(resp).unwrap();
         assert_eq!(true, aeresp.success);
         assert_eq!(2, aeresp.term);
         assert_eq!(3, aeresp.idx);
@@ -1929,7 +1927,7 @@ mod test {
         let resp = result3.unwrap();
 
         assert!(resp.contains("\"success\":false"));
-        let aeresp = append_entries::AppendEntriesResponse::decode(resp).unwrap();
+        let aeresp = deserialize(resp).unwrap();
         assert_eq!(false, aeresp.success);
         assert_eq!(2, aeresp.term);
         assert_eq!(3, aeresp.idx);
@@ -2006,7 +2004,7 @@ mod test {
         let resp = result1.unwrap();
 
         assert!(resp.contains("\"success\":true"));
-        let aeresp = append_entries::AppendEntriesResponse::decode(resp).unwrap();
+        let aeresp = deserialize(resp).unwrap();
         assert_eq!(true, aeresp.success);
         assert_eq!(1, aeresp.term);
         assert_eq!(2, aeresp.idx);
@@ -2018,7 +2016,7 @@ mod test {
         let resp = result2.unwrap();
 
         assert!(resp.contains("\"success\":false"));
-        let aeresp = append_entries::AppendEntriesResponse::decode(resp).unwrap();
+        let aeresp = deserialize(resp).unwrap();
         assert_eq!(false, aeresp.success);
         assert_eq!(1, aeresp.term);
         assert_eq!(1, aeresp.idx);
@@ -2030,7 +2028,7 @@ mod test {
         let resp = result3.unwrap();
 
         assert!(resp.contains("\"success\":true"));
-        let aeresp = append_entries::AppendEntriesResponse::decode(resp).unwrap();
+        let aeresp = deserialize(resp).unwrap();
         assert_eq!(true, aeresp.success);
         assert_eq!(2, aeresp.term);
         assert_eq!(3, aeresp.idx);
@@ -2140,7 +2138,7 @@ mod test {
         let resp = result1.unwrap();
 
         assert!(resp.contains("\"success\":true"));
-        let aeresp = append_entries::AppendEntriesResponse::decode(resp).unwrap();
+        let aeresp = deserialize(resp).unwrap();
         assert_eq!(true, aeresp.success);
         assert_eq!(1, aeresp.term);
         assert_eq!(2, aeresp.idx);
@@ -2152,7 +2150,7 @@ mod test {
         let resp = result2.unwrap();
 
         assert!(resp.contains("\"success\":true"));
-        let aeresp = append_entries::AppendEntriesResponse::decode(resp).unwrap();
+        let aeresp = deserialize(resp).unwrap();
         assert_eq!(true, aeresp.success);
         assert_eq!(2, aeresp.term);
         assert_eq!(3, aeresp.idx);
@@ -2163,7 +2161,7 @@ mod test {
         let resp = result3.unwrap();
 
         assert!(resp.contains("\"success\":true"));
-        let aeresp = append_entries::AppendEntriesResponse::decode(resp).unwrap();
+        let aeresp = deserialize(resp).unwrap();
         assert_eq!(true, aeresp.success);
         assert_eq!(2, aeresp.term);
         assert_eq!(7, aeresp.idx);
@@ -2174,7 +2172,7 @@ mod test {
         let resp = result4.unwrap();
 
         assert!(resp.contains("\"success\":true"));
-        let aeresp = append_entries::AppendEntriesResponse::decode(resp).unwrap();
+        let aeresp = deserialize(resp).unwrap();
         assert_eq!(true, aeresp.success);
         assert_eq!(2, aeresp.term);
         assert_eq!(7, aeresp.idx);
@@ -2185,7 +2183,7 @@ mod test {
         let resp = result5.unwrap();
 
         assert!(resp.contains("\"success\":true"));
-        let aeresp = append_entries::AppendEntriesResponse::decode(resp).unwrap();
+        let aeresp = deserialize(resp).unwrap();
         assert_eq!(true, aeresp.success);
         assert_eq!(2, aeresp.term);
         assert_eq!(9, aeresp.idx);

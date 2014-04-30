@@ -1,5 +1,9 @@
 use super::events::RaftEvent;
 use std::vec::Vec;
+use std::io::IoError;
+use serialize::Encodable;
+use serialize::Decodable;
+use serialize::json::{Encoder,Error};
 
 pub use self::peer::{Peer,parse_config};
 
@@ -21,7 +25,8 @@ pub trait RaftNetEvent<Event> {
     fn to_event(&self) -> ~Event;
 
     fn parse(bytes: ~Vec<u8>) -> Option<~Self>;
-    fn serialize(&self) -> Option<~Vec<u8>>;
+    fn deserialize(s: &str) -> Result<~Self, Error>;
+    fn serialize<'a, T: Encodable<Encoder<'a>, IoError>>(&self) -> ~str;
 }
 
 // TODO: fill this out further.
