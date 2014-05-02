@@ -6,10 +6,8 @@ use serialize::Decodable;
 use serialize::json::{Encoder,Error};
 
 pub use self::peer::{NetPeer, NetPeerConfig};
-pub use self::rpc::{RpcAppendEntriesReq, RpcAppendEntriesRes, RpcVoteReq, RpcVoteRes};
 
 pub mod peer;
-pub mod rpc;
 
 // TODO: put entry functions in here, like:
 // - start_peer_helper (which returns a Peer struct, including fields

@@ -6,7 +6,6 @@ use std::vec::Vec;
 use serialize::{json, Decodable};
 
 use super::super::consistent_log::LogEntry;
-use super::super::net::rpc::{RpcAppendEntriesReq, RpcAppendEntriesRes};
 use super::traits::RaftEvent;
 
 pub struct AppendEntriesReq {
