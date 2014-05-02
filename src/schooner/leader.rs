@@ -17,10 +17,10 @@ pub trait Leader {
     fn leader_teardown(&mut self);
     fn leader_heartbeat(&mut self) -> RaftStateTransition;
 
-    fn leader_append_entries_req(&mut self, req: AppendEntriesReq) -> RaftStateTransition;
+    fn leader_append_entries_req(&mut self, req: (AppendEntriesReq, Sender<AppendEntriesRes>)) -> RaftStateTransition;
     fn leader_append_entries_res(&mut self, res: AppendEntriesRes) -> RaftStateTransition;
 
-    fn leader_vote_req(&mut self, req: VoteReq) -> RaftStateTransition;
+    fn leader_vote_req(&mut self, req: (VoteReq, Sender<VoteRes>)) -> RaftStateTransition;
     fn leader_vote_res(&mut self, res: VoteRes) -> RaftStateTransition;
 }
 
@@ -38,7 +38,7 @@ impl Leader for RaftServerState {
     }
 
 
-    fn leader_append_entries_req(&mut self, req: AppendEntriesReq) -> RaftStateTransition {
+    fn leader_append_entries_req(&mut self, req: (AppendEntriesReq, Sender<AppendEntriesRes>)) -> RaftStateTransition {
         Continue
     }
 
@@ -47,7 +47,7 @@ impl Leader for RaftServerState {
     }
 
 
-    fn leader_vote_req(&mut self, req: VoteReq) -> RaftStateTransition {
+    fn leader_vote_req(&mut self, req: (VoteReq, Sender<VoteRes>)) -> RaftStateTransition {
         Continue
     }
 

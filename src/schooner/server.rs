@@ -1,7 +1,8 @@
 #![allow(dead_code)]
 
 use super::events::*;
-
+use super::events::append_entries::{AppendEntriesReq, AppendEntriesRes};
+use super::events::{VoteReq, VoteRes};
 use super::follower::Follower;   // A trait with impl for RaftServerState
 use super::candidate::Candidate; // A trait with impl for RaftServerState
 use super::leader::Leader;       // A trait with impl for RaftServerState
@@ -113,14 +114,13 @@ impl RaftServer {
     }
 
     // TODO: Spawn Peers
-    pub fn spawn_peer_tasks(&mut self, sender: Sender<RaftPeerMsg>) -> Vec<()> {
+    pub fn spawn_peer_tasks(&mut self, sender: Sender<RaftMsg>) -> Vec<()> {
         Vec::new()
     }
 
     pub fn spawn(&mut self,
-                 to_app_sm:         Sender<RaftAppMsg>,
-                 from_app_sm:       Receiver<RaftAppMsg>,
-                 from_app_endpoint: Receiver<RaftAppMsg>) {
+                 to_app_sm:         Sender<(ClientCmdReq, Sender<ClientCmdRes>)>,
+                 from_app_endpoint: Receiver<(ClientCmdReq, Sender<ClientCmdRes>)>) {
 
         let (from_peers_send, from_peers_rec) = channel();
         let peers = self.spawn_peer_tasks(from_peers_send);
@@ -139,8 +139,7 @@ impl RaftServer {
             // some other way to encapsulate self?
             server_state.main_loop(&timer_rec,
                                    &from_peers_rec,
-                                   &from_app_endpoint,
-                                   &from_app_sm);
+                                   &from_app_endpoint)
         });
     }
 }
@@ -149,7 +148,7 @@ pub struct RaftServerState {
     current_state: RaftNextState,
     is_setup:      bool,
 
-    to_app_sm:     Sender<RaftAppMsg>,
+    to_app_sm:     Sender<(ClientCmdReq, Sender<ClientCmdRes>)>,
 
     peers:         Vec<()>,
 }
@@ -204,7 +203,7 @@ macro_rules! state_proxy(
 
 impl RaftServerState {
     fn new(current_state: RaftNextState,
-           to_app_sm: Sender<RaftAppMsg>,
+           to_app_sm: Sender<(ClientCmdReq, Sender<ClientCmdRes>)>,
            peers: Vec<()>) -> RaftServerState {
         RaftServerState {
             current_state: current_state,
@@ -221,9 +220,8 @@ impl RaftServerState {
 
     fn main_loop(&mut self,
                  timer_rec: &Receiver<()>,
-                 peer_rec:  &Receiver<RaftPeerMsg>,
-                 endpoint_rec: &Receiver<RaftAppMsg>,
-                 app_rec: &Receiver<RaftAppMsg>) {
+                 peer_rec:  &Receiver<RaftMsg>,
+                 endpoint_rec: &Receiver<(ClientCmdReq, Sender<ClientCmdRes>)>) {
 
         // Use every time an invocation may transition the state machine
         // Macro Guide: http://static.rust-lang.org/doc/master/guide-macros.html
@@ -255,13 +253,11 @@ impl RaftServerState {
         let mut timer_handle    = select.handle(timer_rec);
         let mut peer_handle     = select.handle(peer_rec);
         let mut endpoint_handle = select.handle(endpoint_rec);
-        let mut app_handle      = select.handle(app_rec);
 
         unsafe {
             timer_handle.add();
             peer_handle.add();
             endpoint_handle.add();
-            app_handle.add();
         }
 
         loop {
@@ -274,20 +270,16 @@ impl RaftServerState {
             }
             else if peer_handle.id() == ready_id {
                 // An Event Message from a Peer
-                let event : RaftPeerMsg = peer_handle.recv();
+                let event: RaftMsg = peer_handle.recv();
                 match event {
-                    ARQ(ae_req) =>
-                        may_transition!(self.handle_append_entries_req(ae_req)),
+                    ARQ(ae_req, ae_chan) =>
+                        may_transition!(self.handle_append_entries_req((ae_req, ae_chan))),
                     ARS(ae_res) =>
                         may_transition!(self.handle_append_entries_res(ae_res)),
-                    VRQ(vote_req) =>
-                        may_transition!(self.handle_vote_req(vote_req)),
+                    VRQ(vote_req, vote_chan) =>
+                        may_transition!(self.handle_vote_req((vote_req, vote_chan))),
                     VRS(vote_res) =>
                         may_transition!(self.handle_vote_res(vote_res)),
-                    HRQ(handoff_req) =>
-                        may_transition!(self.handle_handoff_req(handoff_req)),
-                    HRS(handoff_res) =>
-                        may_transition!(self.handle_handoff_res(handoff_res)),
                     StopReq => {
                         may_transition!(Stop);
                     }
@@ -295,23 +287,7 @@ impl RaftServerState {
             }
             else if endpoint_handle.id() == ready_id {
                 // An Event Message from an Endpoint
-                let event : RaftAppMsg = endpoint_handle.recv();
-                match event {
-                    APRQ(app_req) =>
-                        may_transition!(self.handle_application_req(app_req)),
-                    APRS(app_res) =>
-                        may_transition!(self.handle_application_res(app_res)),
-                }
-            }
-            else if app_handle.id() == ready_id {
-                // An Event Message from the Application State Machine Task
-                let event : RaftAppMsg = app_handle.recv();
-                match event {
-                    APRQ(app_req) =>
-                        may_transition!(self.handle_application_req(app_req)),
-                    APRS(app_res) =>
-                        may_transition!(self.handle_application_res(app_res)),
-                }
+                may_transition!(self.handle_application_req(endpoint_handle.recv()));
             }
         }
 
@@ -319,14 +295,11 @@ impl RaftServerState {
             timer_handle.remove();
             peer_handle.remove();
             endpoint_handle.remove();
-            app_handle.remove();
         }
     }
 
     //
     // Event handlers (called from main_loop(...))
-    //
-
     fn handle_setup(&mut self) -> RaftStateTransition {
         if !self.is_setup {
             let res = state_proxy!(leader_setup,
@@ -357,11 +330,11 @@ impl RaftServerState {
         }
     }
 
-    fn handle_append_entries_req(&mut self, req: AppendEntriesReq) -> RaftStateTransition {
+    fn handle_append_entries_req(&mut self, req_pair: (AppendEntriesReq, Sender<AppendEntriesRes>)) -> RaftStateTransition {
         state_proxy!(leader_append_entries_req, 
                      candidate_append_entries_req,
                      follower_append_entries_req,
-                     req)
+                     req_pair)
     }
 
     fn handle_append_entries_res(&mut self, res: AppendEntriesRes) -> RaftStateTransition {
@@ -371,11 +344,11 @@ impl RaftServerState {
                      res)
     }
 
-    fn handle_vote_req(&mut self, req: VoteReq) -> RaftStateTransition {
+    fn handle_vote_req(&mut self, req_pair: (VoteReq, Sender<VoteRes>)) -> RaftStateTransition {
         state_proxy!(leader_vote_req,
                      candidate_vote_req,
                      follower_vote_req,
-                     req)
+                     req_pair)
     }
 
     fn handle_vote_res(&mut self, res: VoteRes) -> RaftStateTransition {
@@ -388,50 +361,13 @@ impl RaftServerState {
 
     // In these, it's probably just easier to call the functions
     // in the Leader trait directly.
-    fn handle_application_req(&mut self, _req: ApplicationReq) -> RaftStateTransition {
+    fn handle_application_req(&mut self, req: (ClientCmdReq, Sender<ClientCmdRes>)) -> RaftStateTransition {
         Continue
-
         // if self.is_leader() {
         //     pass to application state machine
         // }
         // else {
-        //     create handoff request for leader
-        // }
-    }
-
-    fn handle_application_res(&mut self, _res: ApplicationRes) -> RaftStateTransition {
-        Continue
-
-        // if res.was_handoff() {
-        //     // wrap as a handoff res and hand it back to the peer the
-        //     // handoff req came from
-        // }
-        // else {
-        //     // send back to client
-        // }
-    }
-
-    fn handle_handoff_req(&mut self, _req: HandoffReq) -> RaftStateTransition {
-        Continue
-
-        // if self.is_leader() {
-        //     // turn req into ApplicationReq
-        //     // self.handle_application_request(new_req)
-        // }
-        // else {
-        //     // send the handoff req to who you think is the leader
-        // }
-    }
-
-    fn handle_handoff_res(&mut self, _res: HandoffRes) -> RaftStateTransition {
-        Continue
-
-        // if res.for_me() {
-        //     // unwrap it as an ApplicationRes and send it to the
-        //     // client that wanted it
-        // }
-        // else {
-        //     // send it to where the handoff should be going
+        //     reply with info on how to talk to the leader
         // }
     }
 

@@ -12,28 +12,38 @@ pub use self::vote::{VoteReq, VoteRes};
 pub use self::handoff::{HandoffReq, HandoffRes};
 
 // Application-level Messages
-pub use self::application::{ApplicationReq, ApplicationRes};
+pub use self::client::{ClientCmdReq, ClientCmdRes};
 pub use self::append_entries::{AppendEntriesReq, AppendEntriesRes};
 
 pub mod traits; // Annoyingly can't be called "trait" because keyword
 pub mod append_entries;
 mod vote;
 mod handoff;
-mod application;
+mod client;
 
 // We have to wrap the RaftEvents in this EventMsg to send them all
 // down the same channel.
-pub enum RaftPeerMsg {
-    ARQ(AppendEntriesReq),
+// Messages for sending within Raft, basically. Contain channels for
+// communication with the networking modules.
+pub enum RaftMsg {
+    ARQ(AppendEntriesReq, Sender<AppendEntriesRes>),
     ARS(AppendEntriesRes),
-    VRQ(VoteReq),
+    VRQ(VoteReq, Sender<VoteRes>),
     VRS(VoteRes),
-    HRQ(HandoffReq),
-    HRS(HandoffRes),
     StopReq,
 }
 
-pub enum RaftAppMsg {
-    APRQ(ApplicationReq),
-    APRS(ApplicationRes)
+// Bare RPC types. Only used when we don't need associated channels for
+// network stuff.
+pub enum RaftRpc {
+    RpcARQ(AppendEntriesReq),
+    RpcARS(AppendEntriesRes),
+    RpcVRQ(VoteReq),
+    RpcVRS(VoteRes),
+    RpcStopReq,
+}
+
+pub enum ClientCmd {
+    CMDRQ(ClientCmdReq, Sender<ClientCmdRes>),
+    CMDRS(ClientCmdRes)
 }
