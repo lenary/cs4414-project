@@ -199,6 +199,13 @@ macro_rules! state_proxy(
             RaftFollower => self.$f($e),
         }
     };
+    ($l:ident, $c:ident, $f:ident, $e:ident, $s:ident) => {
+        match self.current_state {
+            RaftLeader => self.$l($e, $s),
+            RaftCandidate => self.$c($e, $s),
+            RaftFollower => self.$f($e, $s),
+        }
+    };
 )
 
 impl RaftServerState {
@@ -273,11 +280,11 @@ impl RaftServerState {
                 let event: RaftMsg = peer_handle.recv();
                 match event {
                     ARQ(ae_req, ae_chan) =>
-                        may_transition!(self.handle_append_entries_req((ae_req, ae_chan))),
+                        may_transition!(self.handle_append_entries_req(ae_req, ae_chan)),
                     ARS(ae_res) =>
                         may_transition!(self.handle_append_entries_res(ae_res)),
                     VRQ(vote_req, vote_chan) =>
-                        may_transition!(self.handle_vote_req((vote_req, vote_chan))),
+                        may_transition!(self.handle_vote_req(vote_req, vote_chan)),
                     VRS(vote_res) =>
                         may_transition!(self.handle_vote_res(vote_res)),
                     StopReq => {
@@ -287,7 +294,8 @@ impl RaftServerState {
             }
             else if endpoint_handle.id() == ready_id {
                 // An Event Message from an Endpoint
-                may_transition!(self.handle_application_req(endpoint_handle.recv()));
+                let (req, chan) = endpoint_handle.recv();
+                may_transition!(self.handle_application_req(req, chan));
             }
         }
 
@@ -330,11 +338,11 @@ impl RaftServerState {
         }
     }
 
-    fn handle_append_entries_req(&mut self, req_pair: (AppendEntriesReq, Sender<AppendEntriesRes>)) -> RaftStateTransition {
+    fn handle_append_entries_req(&mut self, req: AppendEntriesReq, chan: Sender<AppendEntriesRes>) -> RaftStateTransition {
         state_proxy!(leader_append_entries_req, 
                      candidate_append_entries_req,
                      follower_append_entries_req,
-                     req_pair)
+                     req, chan)
     }
 
     fn handle_append_entries_res(&mut self, res: AppendEntriesRes) -> RaftStateTransition {
@@ -344,11 +352,11 @@ impl RaftServerState {
                      res)
     }
 
-    fn handle_vote_req(&mut self, req_pair: (VoteReq, Sender<VoteRes>)) -> RaftStateTransition {
+    fn handle_vote_req(&mut self, req: VoteReq, chan: Sender<VoteRes>) -> RaftStateTransition {
         state_proxy!(leader_vote_req,
                      candidate_vote_req,
                      follower_vote_req,
-                     req_pair)
+                     req, chan)
     }
 
     fn handle_vote_res(&mut self, res: VoteRes) -> RaftStateTransition {
@@ -361,7 +369,7 @@ impl RaftServerState {
 
     // In these, it's probably just easier to call the functions
     // in the Leader trait directly.
-    fn handle_application_req(&mut self, req: (ClientCmdReq, Sender<ClientCmdRes>)) -> RaftStateTransition {
+    fn handle_application_req(&mut self, req: ClientCmdReq, chan: Sender<ClientCmdRes>) -> RaftStateTransition {
         Continue
         // if self.is_leader() {
         //     pass to application state machine

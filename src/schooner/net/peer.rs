@@ -5,10 +5,10 @@ use super::super::events::*;
 
 pub struct NetPeerConfig {
     pub id: uint,
+    // The port for this field is the peer's *listening* port, not necessarily the
+    // port we will get our request from. Hence the peer should send its id when it
+    // makes a new request to us.
     pub address: SocketAddr,
-    // the peer's *listening* port, not necessarily the port we will get our
-    // request from.
-    pub tcpport: uint,
 }
 
 // Each peer should have one of these, and they should be consistent across

@@ -16,10 +16,10 @@ pub trait Follower {
     fn follower_setup(&mut self) -> RaftStateTransition;
     fn follower_teardown(&mut self);
 
-    fn follower_append_entries_req(&mut self, req: (AppendEntriesReq, Sender<AppendEntriesRes>)) -> RaftStateTransition;
+    fn follower_append_entries_req(&mut self, req: AppendEntriesReq, chan: Sender<AppendEntriesRes>) -> RaftStateTransition;
     fn follower_append_entries_res(&mut self, res: AppendEntriesRes) -> RaftStateTransition;
 
-    fn follower_vote_req(&mut self, req: (VoteReq, Sender<VoteRes>)) -> RaftStateTransition;
+    fn follower_vote_req(&mut self, req: VoteReq, chan: Sender<VoteRes>) -> RaftStateTransition;
     fn follower_vote_res(&mut self, res: VoteRes) -> RaftStateTransition;
 }
 
@@ -33,7 +33,7 @@ impl Follower for RaftServerState {
     }
 
 
-    fn follower_append_entries_req(&mut self, req: (AppendEntriesReq, Sender<AppendEntriesRes>)) -> RaftStateTransition {
+    fn follower_append_entries_req(&mut self, req: AppendEntriesReq, chan: Sender<AppendEntriesRes>) -> RaftStateTransition {
         // redirect client to leader
         Continue
     }
@@ -43,7 +43,7 @@ impl Follower for RaftServerState {
     }
 
 
-    fn follower_vote_req(&mut self, req: (VoteReq, Sender<VoteRes>)) -> RaftStateTransition {
+    fn follower_vote_req(&mut self, req: VoteReq, chan: Sender<VoteRes>) -> RaftStateTransition {
         Continue
     }
 
