@@ -9,7 +9,6 @@ pub use self::traits::RaftEvent;
 // TODO:At some point we may need events for cluster changes (eg joins
 // and parts)
 pub use self::vote::{VoteReq, VoteRes};
-pub use self::handoff::{HandoffReq, HandoffRes};
 
 // Application-level Messages
 pub use self::client::{ClientCmdReq, ClientCmdRes};
@@ -18,7 +17,6 @@ pub use self::append_entries::{AppendEntriesReq, AppendEntriesRes};
 pub mod traits; // Annoyingly can't be called "trait" because keyword
 pub mod append_entries;
 mod vote;
-mod handoff;
 mod client;
 
 // We have to wrap the RaftEvents in this EventMsg to send them all
