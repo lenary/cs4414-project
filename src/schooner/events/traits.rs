@@ -1,6 +1,7 @@
 
 // A trait so we can send all events from the network layer down the
 // same channel. 
+#[deriving(Decodable, Encodable, Clone, Show)]
 pub trait RaftEvent: Send {
 
     // I'd imagine that each "request" type has a channel inside it

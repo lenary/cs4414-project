@@ -20,13 +20,10 @@ pub mod handlers;
 // This is essentially to do serialisation/deserialisation
 // there should be only one of these per RaftEvent right now
 
-pub trait RaftNetEvent<Event> {
-    fn from_event(event: &Event) -> ~Self;
-    fn to_event(&self) -> ~Event;
-
-    fn parse(bytes: ~Vec<u8>) -> Option<~Self>;
-    fn deserialize(s: &str) -> Result<~Self, Error>;
-    fn serialize<'a, T: Encodable<Encoder<'a>, IoError>>(&self) -> ~str;
+#[deriving(Encodable)]
+pub trait RaftNetEvent<RaftEvent> {
+    fn deserialize(s: &str) -> Result<~RaftEvent, Error>;
+    fn serialize(&self) -> ~str;
 }
 
 // TODO: fill this out further.

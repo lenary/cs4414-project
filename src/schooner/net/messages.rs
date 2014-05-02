@@ -7,22 +7,52 @@ use std::io::{BufferedReader,InvalidInput,IoError,IoResult,Listener};
 use serialize::{Encodable,Decodable};
 use serialize::json;
 use serialize::json::{Encoder,Decoder,Error};
-use super::super::Event;
+use super::RaftNetEvent;
+use super::super::events::traits::RaftEvent;
 use super::super::events::append_entries::{AppendEntriesReq, AppendEntriesRes};
 
 static STOP_MSG: &'static str = "STOP";
-
+/*
 pub fn serialize<'a, T: Encodable<Encoder<'a>, IoError>>(to_encode_object: &T) -> ~str {
     Encoder::str_encode(to_encode_object)
 }
+*/
 
-pub fn deserialize(s: &str) -> Result<AppendEntriesRes, json::Error> {
-    match json::from_str(s) {
-        Ok(jobj) => {
-            let mut decoder = Decoder::new(jobj);
-            Decodable::decode(&mut decoder)
-        },
-        Err(e) => Err(e)
+#[deriving(Encodable)]
+struct NetResponse;
+
+#[deriving(Encodable)]
+struct NetRequest;
+
+impl RaftNetEvent<AppendEntriesRes> for NetResponse {
+    fn deserialize(s: &str) -> Result<~AppendEntriesRes, Error> {
+        match json::from_str(s) {
+            Ok(jobj) => {
+                let mut decoder = Decoder::new(jobj);
+                Decodable::decode(&mut decoder)
+            },
+            Err(e) => Err(e)
+        }
+    }
+
+    fn serialize(&self) -> ~str {
+        Encoder::str_encode(self)
+    }
+}
+
+impl RaftNetEvent<AppendEntriesReq> for NetRequest {
+    fn deserialize(s: &str) -> Result<~AppendEntriesReq, Error> {
+        match json::from_str(s) {
+            Ok(jobj) => {
+                let mut decoder = Decoder::new(jobj);
+                Decodable::decode(&mut decoder)
+            },
+            Err(e) => Err(e)
+        }
+    }
+
+    fn serialize(&self) -> ~str {
+        Encoder::str_encode(self)
     }
 }
 
@@ -36,13 +66,16 @@ pub fn deserialize(s: &str) -> Result<AppendEntriesRes, json::Error> {
 ///  - conx_str: info to create SocketAddr for listening on
 ///  - chan: Event channel in the Server struct.
 ///
-pub fn network_listener(conx_str: ~str, chan: Sender<~Event>, svr_id: uint) {
+pub fn network_listener(conx_str: ~str, chan: Sender<(~RaftEvent, Sender<~RaftEvent>)>, svr_id: uint) {
     let addr = from_str::<SocketAddr>(conx_str).expect("Address error.");
     let mut acceptor = TcpListener::bind(addr).unwrap().listen().unwrap();
     info!("server <{}> listening on {:}", svr_id, addr);
 
-    // TODO: document what this channel is for
-    let (chsend, chrecv): (Sender<~str>, Receiver<~str>) = channel();
+    // For sending/receiving replies on the network listener loop.
+    // We get a message, and then we send a response channel back to
+    // whoever is running this listener. Once we get the response we
+    // send it back out over the network.
+    let (chsend, chrecv) = channel();
     let mut stop_signalled = false;
 
     debug!("NL: DEBUG 00: svr: {}", svr_id);
@@ -54,8 +87,7 @@ pub fn network_listener(conx_str: ~str, chan: Sender<~Event>, svr_id: uint) {
         // TODO: only handling one request at a time for now => spawn threads later?
         match read_network_msg(stream.clone(), svr_id) {
             Ok(input)  => {
-                let ev = ~Event{msg: input.clone(), ch: chsend.clone()};
-                chan.send(ev);
+                chan.send((input.clone(), chsend.clone()));
 
                 if is_stop_msg(input) {
                     stop_signalled = true;  // TODO: do I need to set this bool var or can I just break out here?
@@ -68,7 +100,8 @@ pub fn network_listener(conx_str: ~str, chan: Sender<~Event>, svr_id: uint) {
                     // and the response will be send back to the network caller.
                     // Since the response is just a string, all logic of what is in the request
                     // & response is handled by the serve-loop
-                    let resp = chrecv.recv();
+                    let raft_resp = chrecv.recv();
+                    let resp = raft_resp.serialize();
                     info!("NL: sending response: {:?}", resp);
                     let result = stream.write_str(resp);
                     if result.is_err() {

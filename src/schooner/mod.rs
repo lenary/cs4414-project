@@ -24,9 +24,11 @@ use sync::TaskPool;
 use self::consistent_log::{Log,LogEntry};
 use self::net::*;
 use self::events::append_entries::{AppendEntriesReq,AppendEntriesRes};
+use self::events::traits::RaftEvent;
 
+use net::RaftNetEvent;
 use net::handlers::leader_peer_handler;
-use net::messages::{network_listener, is_stop_msg, serialize};
+use net::messages::{network_listener, is_stop_msg};
 mod events;
 mod consistent_log;
 mod net;
@@ -203,7 +205,8 @@ impl Server {
             None => self.state = Follower
         }
 
-        let (chsend, chrecv): (Sender<~Event>, Receiver<~Event>) = channel();
+        let (chsend, chrecv): (Sender  <(~RaftEvent, Sender<~RaftEvent>)>,
+                               Receiver<(~RaftEvent, Sender<~RaftEvent>)>) = channel();
         let conx_str = format!("{}:{:u}", &self.ip, self.tcpport);
         let svr_id = self.id;
         spawn(proc() {
@@ -215,7 +218,7 @@ impl Server {
         Ok(())
     }
 
-    fn serve_loop(&mut self, event_recvr: Receiver<~Event>) {
+    fn serve_loop(&mut self, event_recvr: Receiver<~RaftEvent>) {
         debug!("Now serving => loop until Stopped");
         loop {
             match self.state {
@@ -231,7 +234,7 @@ impl Server {
     }
 
 
-    fn follower_loop(&mut self, event_recvr: &Receiver<~Event>) {
+    fn follower_loop(&mut self, event_recvr: &Receiver<~RaftEvent>) {
         let mut timer = Timer::new().unwrap();
 
         loop {
@@ -270,11 +273,11 @@ impl Server {
                     ev.ch.send( self.redirect_msg() );
 
                 } else {
-                    let result = AppendEntriesReq::decode(ev.msg);
+                    let result = RaftNetEvent::deserialize(ev.msg);
                     if result.is_err() {
                         fail!("ERROR: Unable to decode msg into append_entry_request: {}.\nError is: {:?}", ev.msg, result.err());
                     }
-                    let aereq = result.unwrap();
+                    let aereq: AppendEntriesReq = result.unwrap();
                     self.leader = get_leader_ptr(&aereq, &self.peers); // update leader based on each AEReq
                     let aeresp = match self.log.append_entries(&aereq) {
                         Ok(_)  => {
@@ -298,8 +301,7 @@ impl Server {
                                                   peer_id: self.id}
                         }
                     };
-                    let jstr = serialize(&aeresp);
-                    ev.ch.send(jstr);
+                    ev.ch.send(aeresp);
                 }
                 debug!("FLW: DEBUG 3");
             }
@@ -311,7 +313,7 @@ impl Server {
         self.state = Leader;
     }
 
-    fn leader_loop(&mut self, event_recvr: &Receiver<~Event>) {
+    fn leader_loop(&mut self, event_recvr: &Receiver<~RaftEvent>) {
         info!("leader loop with id = {:?}", self.id);
 
         let mut pool = TaskPool::new(TASK_POOL_SZ, || {
@@ -494,7 +496,7 @@ impl Server {
     ///
     /// TODO: DOCUMENT ME
     ///
-    fn ldr_process_cmd_from_client(&mut self, ev: &~Event,
+    fn ldr_process_cmd_from_client(&mut self, ev: &~RaftEvent,
                                    pool: &mut TaskPool<uint>,
                                    chsend_response: &Sender<IoResult<AppendEntriesRes>>,
                                    chrecv_response: &Receiver<IoResult<AppendEntriesRes>>) {
@@ -574,7 +576,7 @@ impl Server {
         }
     }
 
-    fn ldr_append_to_log_and_send_client_response(&mut self, aereq: &AppendEntriesReq, ev: &~Event) {
+    fn ldr_append_to_log_and_send_client_response(&mut self, aereq: &AppendEntriesReq, ev: &~RaftEvent) {
         // commit to own log and send response
         match self.log.append_entries(aereq) {
             Ok(_)  => {
@@ -751,7 +753,6 @@ mod test {
     use super::Server;
 
     use super::events::append_entries::{AppendEntriesReq,AppendEntriesRes};
-    use super::net::messages::{serialize,deserialize};
     use super::consistent_log::LogEntry;
 
     static TEST_CFG      : &'static str = "server.test.config";

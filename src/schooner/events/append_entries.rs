@@ -29,19 +29,6 @@ impl RaftEvent for AppendEntriesRes {
 }
 
 impl AppendEntriesReq {
-    pub fn encode(&self) -> ~str {
-        json::Encoder::str_encode(&self)
-    }
-    
-    pub fn decode(json_str: &str) -> Result<AppendEntriesReq, json::Error> {
-        match json::from_str(json_str) {
-            Ok(jobj) => {
-                let mut decoder = json::Decoder::new(jobj);
-                Decodable::decode(&mut decoder)
-            },
-            Err(e) => Err(e)
-        }
-    }
 }
 
 #[deriving(Decodable, Encodable, Clone, Show)]
@@ -57,19 +44,6 @@ pub struct AppendEntriesRes {
 }
 
 impl AppendEntriesRes {
-    pub fn encode(&self) -> ~str {
-        json::Encoder::str_encode(&self)
-    }
-    
-    pub fn decode(json_str: &str) -> Result<AppendEntriesRes, json::Error> {
-        match json::from_str(json_str) {
-            Ok(jobj) => {
-                let mut decoder = json::Decoder::new(jobj);
-                Decodable::decode(&mut decoder)
-            },
-            Err(e) => Err(e)
-        }
-    }
 }
 
 #[cfg(test)]

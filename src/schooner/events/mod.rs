@@ -15,7 +15,7 @@ pub use self::handoff::{HandoffReq, HandoffRes};
 pub use self::application::{ApplicationReq, ApplicationRes};
 pub use self::append_entries::{AppendEntriesReq, AppendEntriesRes};
 
-mod traits; // Annoyingly can't be called "trait" because keyword
+pub mod traits; // Annoyingly can't be called "trait" because keyword
 pub mod append_entries;
 mod vote;
 mod handoff;
