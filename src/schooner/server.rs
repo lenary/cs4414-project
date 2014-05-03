@@ -119,8 +119,8 @@ impl RaftServer {
     }
 
     pub fn spawn(&mut self,
-                 to_app_sm:         Sender<(ClientCmdReq, Sender<ClientCmdRes>)>,
-                 from_app_endpoint: Receiver<(ClientCmdReq, Sender<ClientCmdRes>)>) {
+                to_app_sm:         Sender<(ClientCmdReq, Sender<ClientCmdRes>)>,
+                from_app_endpoint: Receiver<(ClientCmdReq, Sender<ClientCmdRes>)>) {
 
         let (from_peers_send, from_peers_rec) = channel();
         let peers = self.spawn_peer_tasks(from_peers_send);

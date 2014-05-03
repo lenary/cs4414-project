@@ -25,7 +25,7 @@ use self::consistent_log::{Log,LogEntry};
 use self::net::*;
 use events::{ClientCmdReq, ClientCmdRes};
 use self::events::append_entries::{AppendEntriesReq,AppendEntriesRes};
-use self::events::traits::RaftEvent;
+use self::server::RaftServer;
 
 mod events;
 mod consistent_log;
@@ -37,11 +37,16 @@ mod candidate;
 mod follower;
 
 fn main() {
+    let (endp_send, endp_recv): (Sender<(ClientCmdReq, Sender<ClientCmdRes>)>,
+                                 Receiver<(ClientCmdReq, Sender<ClientCmdRes>)>) = channel();
+    let (sm_send, sm_recv): (Sender<(ClientCmdReq, Sender<ClientCmdRes>)>,
+                             Receiver<(ClientCmdReq, Sender<ClientCmdRes>)>) = channel();
     spawn(proc() {
-        let (send, recv): (Sender<(ClientCmdReq, Sender<ClientCmdRes>)>,
-                           Receiver<(ClientCmdReq, Sender<ClientCmdRes>)>) = channel();
+        // Stupid dummy state machine
         loop {
-            recv.recv();
+            sm_recv.recv();
         }
     });
+    let mut server = RaftServer::new();
+    server.spawn(sm_send, endp_recv);
 }

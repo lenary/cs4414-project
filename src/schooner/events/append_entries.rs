@@ -6,8 +6,8 @@ use std::vec::Vec;
 use serialize::{json, Decodable};
 
 use super::super::consistent_log::LogEntry;
-use super::traits::RaftEvent;
 
+#[deriving(Decodable, Encodable)]
 pub struct AppendEntriesReq {
     // Raft information
     pub term: u64,          // current term of leader
@@ -18,6 +18,7 @@ pub struct AppendEntriesReq {
     pub entries: Vec<LogEntry>, // entries to log; may be empty (hearbeat msg)
 }
 
+#[deriving(Decodable, Encodable)]
 pub struct AppendEntriesRes {
     pub success: bool,
     pub term: u64,
@@ -25,14 +26,6 @@ pub struct AppendEntriesRes {
 
 impl AppendEntriesReq {
     // Anything extra we need to have, like figuring out whether we were successful.
-}
-
-impl RaftEvent for AppendEntriesReq {
-    // TODO: implement respond()
-}
-
-impl RaftEvent for AppendEntriesRes {
-    
 }
 
 impl AppendEntriesRes {

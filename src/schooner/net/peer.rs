@@ -3,6 +3,19 @@ use std::io::net::tcp::TcpStream;
 use std::option::Option;
 use super::super::events::*;
 
+// Bare RPC types. This is the incoming type before we set up channels
+// to make Raft messages. Might not be necessary, provided we can setup
+// those channels in the functions where the RPCs are built out of network
+// bytes.
+#[deriving(Decodable, Encodable)]
+pub enum RaftRpc {
+    RpcARQ(AppendEntriesReq),
+    RpcARS(AppendEntriesRes),
+    RpcVRQ(VoteReq),
+    RpcVRS(VoteRes),
+    RpcStopReq,
+}
+
 pub struct NetPeerConfig {
     pub id: uint,
     // The port for this field is the peer's *listening* port, not necessarily the
@@ -75,6 +88,25 @@ impl NetPeer {
         self.stream = Some(stream);
         self.rpc_recv = Some(rpc_recv);
         true
+    }
+
+    /*
+     * Used by the leader to send commands to followers, and by candidates, etc.
+     */
+    fn send(&mut self, cmd: RaftRpc) -> Option<Receiver<RaftRpc>> {
+        if self.stream.is_none() {
+            return None;
+        }
+        let (rpc_send, rpc_recv) = channel();
+        // TODO:
+        // spawn(proc() {
+        //     self.stream.unwrap().write( /* serialize cmd */ );
+        //     reply = /* wait for a reply on the TCP connection */
+        //     // Probably we should break the channel if the TCPstream dies,
+        //     // so the leader will know we didn't get a reply.
+        //     rpc_send.send(reply);
+        // });
+        Some(rpc_recv)
     }
 
     /*
