@@ -1,13 +1,16 @@
+use std::io::BufferedReader;
 use std::io::net::ip::SocketAddr;
 use std::io::net::tcp::TcpStream;
 use std::option::Option;
+use uuid::{Uuid, UuidVersion, Version4Random};
 use super::super::events::*;
+use super::parsers::{read_network_msg};
 
 // Bare RPC types. This is the incoming type before we set up channels
 // to make Raft messages. Might not be necessary, provided we can setup
 // those channels in the functions where the RPCs are built out of network
 // bytes.
-#[deriving(Decodable, Encodable)]
+#[deriving(Decodable, Encodable, Eq)]
 pub enum RaftRpc {
     RpcARQ(AppendEntriesReq),
     RpcARS(AppendEntriesRes),
@@ -16,6 +19,7 @@ pub enum RaftRpc {
     RpcStopReq,
 }
 
+#[deriving(Clone, Hash, Eq, TotalEq)]
 pub struct NetPeerConfig {
     pub id: uint,
     // The port for this field is the peer's *listening* port, not necessarily the
@@ -27,7 +31,7 @@ pub struct NetPeerConfig {
 // Each peer should have one of these, and they should be consistent across
 // nodes.
 pub struct NetPeer {
-    config: NetPeerConfig,
+    config: ~NetPeerConfig,
     // If we have an open connection to this peer, then this will be Some(...).
     pub stream: Option<~TcpStream>,
     // When we iterate over the NetPeers, we can check if we have a reply from
@@ -35,7 +39,7 @@ pub struct NetPeer {
     // In this case, this means when we send an AppendEntriesReq up to Schooner,
     // we need to assign this as the receiving end of the AppendEntriesReq's
     // to_leader channel.
-    pub rpc_recv: Option<~Receiver<RaftRpc>>,
+    pub rpc_send: ~Sender<RaftRpc>,
 }
 
 impl NetPeer {
@@ -45,11 +49,11 @@ impl NetPeer {
      * since each command will contain a port we can use for replies, we don't
      * need two ports in the arguments.
      */
-    fn new(config: NetPeerConfig, sender: Sender<RaftRpc>) -> NetPeer {
+    pub fn new(config: ~NetPeerConfig, sender: ~Sender<RaftRpc>) -> NetPeer {
         NetPeer {
             config: config,
             stream: None,
-            rpc_recv: None,
+            rpc_send: sender,
         }
     }
 
@@ -58,18 +62,31 @@ impl NetPeer {
      * we can establish a peer connection - the other way is if the peer tries
      * to connect to *us*.
      */
-    fn try_spawn(&mut self) -> Option<~Sender<RaftRpc>> {
+    fn try_spawn(&mut self) -> bool {
         match TcpStream::connect(self.config.address) {
             Ok(stream) => {
-                self.stream = Some(~stream);
-                let (rpc_send, rpc_recv): (Sender<RaftRpc>, Receiver<RaftRpc>) = channel();
-                self.rpc_recv = Some(~rpc_recv);
-                Some(~rpc_send)
+                self.stream = Some(~stream.clone());
+                let sender = self.rpc_send.clone();
+                spawn(proc() {
+                    let msg = read_network_msg(BufferedReader::new(stream.clone()));
+                    debug!("{}", msg);
+                    // TODO: Actually read/parse.
+                    let vote = RpcVRQ(VoteReq {
+                        id: 0,
+                        uuid: Uuid::new(Version4Random).unwrap(),
+                    });
+                    sender.send(vote);
+                });
+                true
             }
             err => {
-                None
+                false
             }
         }
+    }
+
+    fn listen(&mut self, stream: &TcpStream) {
+
     }
 
     /*
@@ -80,13 +97,11 @@ impl NetPeer {
      * an open connection to this peer (this is an invalid state; we should probably
      * crash or handle it somehow).
      */
-    fn add_connection(&mut self, rpc_recv: ~Receiver<RaftRpc>, stream: ~TcpStream) -> bool {
-        if self.stream.is_some() || self.rpc_recv.is_some() {
-            // Failure!
+    fn add_connection(&mut self, stream: ~TcpStream) -> bool {
+        if self.stream.is_some() {
             return false;
         }
         self.stream = Some(stream);
-        self.rpc_recv = Some(rpc_recv);
         true
     }
 
@@ -108,42 +123,80 @@ impl NetPeer {
         // });
         Some(rpc_recv)
     }
-
-    /*
-     * If this peer's cmd_recv has a RaftCmd waiting, then send the RaftCmd to
-     * the node.
-     */
-    fn reply(mut self) -> bool {
-        match self.rpc_recv {
-            Some(mut rpc_recv) => {
-                match rpc_recv.recv() {
-                    RpcARQ(ae_req) => {
-                        // TODO: Send ARQ to this peer
-                        return false;
-                    },
-                    RpcARS(ae_res) => {
-                        // TODO: send ARS to peer
-                        return false;
-                    },
-                    RpcVRQ(vote_req) => {
-                        // TODO: send VRQ to peer
-                        return false;
-                    },
-                    RpcVRS(vote_res) => {
-                        // TODO: send VRS to peer
-                        return false;
-                    },
-                    RpcStopReq => {
-                        return false;
-                    }
-                }
-            }
-            None => {
-                return false;
-            }
-        }
-    }
 }
 
 // TODO: Get the old parsing code out of the Git history and work it into
 // this configuration.
+
+#[cfg(test)]
+mod test {
+    use std::io::{TcpStream, BufferedReader, IoResult, IoError, InvalidInput};
+    use std::io::net::ip::{SocketAddr, Ipv4Addr};
+    use std::io::{Acceptor, Listener, TcpListener, TcpStream};
+    use std::io::net::tcp::TcpAcceptor;
+    
+    use super::super::super::events::*;
+    use uuid::{Uuid, UuidVersion, Version4Random};
+    use super::{NetPeer, NetPeerConfig, RaftRpc, RpcVRQ};
+    use super::super::parsers::frame_msg;
+
+    /*
+     * Can we parse content length fields?
+     */
+    #[test]
+    fn test_spawn() {
+        let pc1 = ~NetPeerConfig {
+            id: 1,
+            address: SocketAddr {
+                ip: Ipv4Addr(127, 0, 0, 1),
+                port: 8844,
+            },
+        };
+        let pc2 = ~NetPeerConfig {
+            id: 1,
+            address: SocketAddr {
+                ip: Ipv4Addr(127, 0, 0, 1),
+                port: 8844,
+            },
+        };
+        let (send1, recv1) = channel();
+        let (send2, recv2) = channel();
+        let mut peer1 = NetPeer::new(pc1, ~send1);
+        let mut peer2 = NetPeer::new(pc2, ~send2);
+        let listen_addr = SocketAddr {
+            ip: Ipv4Addr(127, 0, 0, 1),
+            port: 8844,
+        };
+        let listener: TcpListener = TcpListener::bind(listen_addr).unwrap();
+        let mut acceptor: TcpAcceptor = listener.listen().unwrap();
+        peer1.try_spawn();
+        peer2.try_spawn();
+        let mut count = 0;
+        for mut stream in acceptor.incoming() {
+            let msg = frame_msg("Hello world", 1);
+            stream.write(msg.as_bytes());
+            count += 1;
+            if count > 1 {
+                break;
+            }
+        }
+        let mut replies = 0;
+        match recv1.recv() {
+            RpcVRQ(vote) => {
+                assert!(vote.id == 0);
+                replies += 1;
+            },
+            _ => fail!(),
+        }
+        match recv2.recv() {
+            RpcVRQ(vote) => {
+                assert!(vote.id == 0);
+                replies += 1;
+            },
+            _ => fail!(),
+        }
+        drop(acceptor);
+        assert!(count == 2);
+        assert!(replies == 2);
+    }
+}

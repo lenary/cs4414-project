@@ -9,7 +9,7 @@ static LENGTH_TOKEN: &'static str = "Content-length";
 /*
  * Wrap a string in the right headers for it to be sent over the network.
  */
-fn frame_msg(s: &str, server_id: uint) -> ~str {
+pub fn frame_msg(s: &str, server_id: uint) -> ~str {
     (make_content_length(s) + "\n" +
      make_id_hdr(server_id) + "\n" +
      s)
@@ -71,7 +71,7 @@ fn parse_server_id(id_hdr: &str) -> IoResult<uint> {
     result
 }
 
-fn read_network_msg(mut reader: BufferedReader<TcpStream>) -> IoResult<~str> {
+pub fn read_network_msg(mut reader: BufferedReader<TcpStream>) -> IoResult<~str> {
     let mut length: uint;
     let length_hdr = try!(reader.read_line());
     let length = try!(parse_content_length(length_hdr));

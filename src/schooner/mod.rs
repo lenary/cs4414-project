@@ -6,6 +6,7 @@
 extern crate log;
 extern crate rand;
 extern crate serialize;
+extern crate collections;
 extern crate sync;
 extern crate uuid;
 

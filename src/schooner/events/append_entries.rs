@@ -1,13 +1,12 @@
 // Events for the AppendEntries RPC
 
-extern crate serialize;
-
+use uuid::Uuid;
 use std::vec::Vec;
 use serialize::{json, Decodable};
 
 use super::super::consistent_log::LogEntry;
 
-#[deriving(Decodable, Encodable)]
+#[deriving(Decodable, Encodable, Eq)]
 pub struct AppendEntriesReq {
     // Raft information
     pub term: u64,          // current term of leader
@@ -16,9 +15,10 @@ pub struct AppendEntriesReq {
     pub commit_idx: u64,    // last idx of log committed to leader's state machine
     pub leader_id: u64,
     pub entries: Vec<LogEntry>, // entries to log; may be empty (hearbeat msg)
+    pub uuid: Uuid,
 }
 
-#[deriving(Decodable, Encodable)]
+#[deriving(Decodable, Encodable, Eq)]
 pub struct AppendEntriesRes {
     pub success: bool,
     pub term: u64,

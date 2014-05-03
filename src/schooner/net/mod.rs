@@ -4,16 +4,17 @@ use serialize::Encodable;
 use serialize::Decodable;
 use std::io::{Acceptor, Listener, TcpListener, TcpStream};
 use std::io::net::tcp::TcpAcceptor;
+use std::comm::Select;
+use collections::HashMap;
 use serialize::json::{Encoder,Error};
 
-pub use self::peer::{NetPeer, NetPeerConfig};
+pub use self::peer::{NetPeer, NetPeerConfig, RaftRpc};
 use super::events::{RaftMsg, VoteReq, VoteRes, AppendEntriesReq, AppendEntriesRes,
                     ClientCmdRes, ClientCmdReq};
-
 pub mod peer;
 
 // Private stuff, shouldn't be used elsewhere.
-mod parsers;
+pub mod parsers;
 
 // TODO: put entry functions in here, like:
 // - start_peer_helper (which returns a Peer struct, including fields
@@ -26,10 +27,18 @@ mod parsers;
  * with them.
  */
 struct NetListener {
-    peers: Vec<NetPeer>
+    peer_recv: HashMap<uint, ~NetPeer>,
+    conf_dict: HashMap<~NetPeerConfig, uint>,
 }
 
 impl NetListener {
+    fn new() -> NetListener {
+        NetListener {
+            peer_recv: HashMap::new(),
+            conf_dict: HashMap::new(),
+        }
+    }
+    
     /*
      * Start the listener for this server. This needs to open a TCP listening port
      * at whatever its configured listening address is, and it needs to have a way
@@ -40,12 +49,23 @@ impl NetListener {
      * from_peers_send: sends messages from peers back to the main loop.
      *
      */
-    fn spawn_client_listener(conf: NetPeerConfig, peer_configs: Vec<NetPeerConfig>, from_peers_send: Sender<RaftMsg>) {
+    fn spawn_peer_listener(&mut self, conf: NetPeerConfig, peer_configs: ~Vec<NetPeerConfig>, from_peers_send: Sender<RaftMsg>) {
         // unwrapping because our server is dead in the water if it can't listen on its assigned port
-        let listener: TcpListener = TcpListener::bind(conf.address).unwrap();
-        let mut acceptor: TcpAcceptor = listener.listen().unwrap();
-        for stream in acceptor.incoming() {
-            
+        spawn(proc() {
+            let listener: TcpListener = TcpListener::bind(conf.address).unwrap();
+            let mut acceptor: TcpAcceptor = listener.listen().unwrap();
+            for stream in acceptor.incoming() {
+
+            }
+        });
+        let selector = Select::new();
+        for conf in peer_configs.iter() {
+            let (send, recv) = channel();
+            let netpeer = ~NetPeer::new(~conf.clone(), ~send);
+            let mut peer_handle = selector.handle(&recv);
+            unsafe { peer_handle.add(); }
+            self.peer_recv.insert(peer_handle.id(), netpeer);
+            self.conf_dict.insert(~conf.clone(), peer_handle.id());
         }
     }
 
@@ -56,7 +76,7 @@ impl NetListener {
      * from_clients_send: sends messages from peers back to the main loop.
      *
      */
-    fn spawn_peer_listener(conf: NetPeerConfig, from_client_send: Sender<(ClientCmdReq, Sender<ClientCmdRes>)>) {
+    fn spawn_client_listener(conf: NetPeerConfig, from_client_send: Sender<(ClientCmdReq, Sender<ClientCmdRes>)>) {
         // unwrapping because our server is dead in the water if it can't listen on its assigned port
         let listener: TcpListener = TcpListener::bind(conf.address).unwrap();
         let mut acceptor: TcpAcceptor = listener.listen().unwrap();
