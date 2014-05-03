@@ -1,10 +1,14 @@
 use std::io::{TcpStream, BufferedReader, IoResult, IoError, InvalidInput};
 use std::slice::bytes;
 use std::str::from_utf8;
+use std::char::*;
 
 static ID_TOKEN: &'static str = "Server-Id";
 static LENGTH_TOKEN: &'static str = "Content-length";
 
+/*
+ * Wrap a string in the right headers for it to be sent over the network.
+ */
 fn frame_msg(s: &str, server_id: uint) -> ~str {
     (make_content_length(s) + "\n" +
      make_id_hdr(server_id) + "\n" +
@@ -19,12 +23,6 @@ fn make_id_hdr(id: uint) -> ~str{
     ID_TOKEN + ": " + id.to_str()
 }
 
-/*
- * Expects content-length string of format `Length: NN`
- * where NN is an integer >= 0.
- * Returns the length as a uint or None if the string is not
- * of the specified format.
- */
 fn parse_content_length(len_hdr: &str) -> IoResult<uint> {
     if !len_hdr.starts_with(LENGTH_TOKEN + ":") {
         return Err(IoError{kind: InvalidInput,
@@ -73,29 +71,21 @@ fn parse_server_id(id_hdr: &str) -> IoResult<uint> {
     result
 }
 
-/* 
- * TODO: can this fn deal with HTTP style requests?
- * If not, what should the client request look like for this to work?
- */
 fn read_network_msg(mut reader: BufferedReader<TcpStream>) -> IoResult<~str> {
     let mut length: uint;
     let length_hdr = try!(reader.read_line());
-    debug!("length hdr: {}", length_hdr);
     let length = try!(parse_content_length(length_hdr));
     let id_hdr = try!(reader.read_line());
-    debug!("id hdr: {}", id_hdr);
     let id = try!(parse_server_id(id_hdr));
-    debug!("** read_network_msg: length of msg {:u}", length);
-
     let mut buf: Vec<u8> = Vec::from_elem(length, 0u8);
     let nread = try!(reader.read(buf.as_mut_slice()));
-
     if nread != length {
         return Err(IoError{kind: InvalidInput,
                            desc: "Network message read of specified bytes failed",
-                           detail: Some(format!("Expected {} bytes, but read {} bytes", length, nread))});
+                           detail: Some(
+                                   format!("Expected {} bytes, but read {} bytes",
+                                   length, nread))});
     }
-
     match from_utf8(buf.as_slice()) {
         Some(s) => Ok(s.to_owned()),
         None => Err(IoError{kind: InvalidInput,
@@ -112,9 +102,11 @@ mod test {
     use std::io::net::tcp::TcpAcceptor;
     
     use super::{parse_content_length, parse_server_id, read_network_msg,
-                make_content_length, make_id_hdr, frame_msg};
-    use super::{LENGTH_TOKEN, ID_TOKEN};
+                LENGTH_TOKEN, make_id_hdr, frame_msg};
 
+    /*
+     * Can we parse content length fields?
+     */
     #[test]
     fn test_content_length() {
         assert!(parse_content_length(LENGTH_TOKEN + ": 800").unwrap() == 800);
@@ -124,6 +116,9 @@ mod test {
         assert!(parse_content_length("Length 0").is_err());
     }
 
+    /*
+     * Can we create and parse server ID fields?
+     */
     #[test]
     fn test_parse_id() {
         assert!(parse_server_id(make_id_hdr(53)).unwrap() == 53);
@@ -132,6 +127,9 @@ mod test {
         assert!(parse_server_id("Length 0").is_err());
     }
 
+    /*
+     * Spawns a server, listens, sends one message and tries to parse it.
+     */
     #[test]
     fn test_read_network_msg() {
         let listen_addr = SocketAddr {

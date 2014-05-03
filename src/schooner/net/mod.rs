@@ -7,7 +7,8 @@ use std::io::net::tcp::TcpAcceptor;
 use serialize::json::{Encoder,Error};
 
 pub use self::peer::{NetPeer, NetPeerConfig};
-use super::events::{RaftMsg, VoteReq, VoteRes, AppendEntriesReq, AppendEntriesRes};
+use super::events::{RaftMsg, VoteReq, VoteRes, AppendEntriesReq, AppendEntriesRes,
+                    ClientCmdRes, ClientCmdReq};
 
 pub mod peer;
 
@@ -32,15 +33,30 @@ impl NetListener {
     /*
      * Start the listener for this server. This needs to open a TCP listening port
      * at whatever its configured listening address is, and it needs to have a way
-     * to send commands that it has received, from peers or clients, back out to
-     * the main loop.
+     * to send commands that it has received from peers back out to the main loop.
      *
      * conf: the config for this server
      * peer_configs: vector of configs for peers
      * from_peers_send: sends messages from peers back to the main loop.
      *
      */
-    fn spawn_listener(conf: NetPeerConfig, peer_configs: Vec<NetPeerConfig>, from_peers_send: Sender<RaftMsg>) {
+    fn spawn_client_listener(conf: NetPeerConfig, peer_configs: Vec<NetPeerConfig>, from_peers_send: Sender<RaftMsg>) {
+        // unwrapping because our server is dead in the water if it can't listen on its assigned port
+        let listener: TcpListener = TcpListener::bind(conf.address).unwrap();
+        let mut acceptor: TcpAcceptor = listener.listen().unwrap();
+        for stream in acceptor.incoming() {
+            
+        }
+    }
+
+    /*
+     * Start the client listener.
+     *
+     * conf: the config for this server, containing *client* listen address.
+     * from_clients_send: sends messages from peers back to the main loop.
+     *
+     */
+    fn spawn_peer_listener(conf: NetPeerConfig, from_client_send: Sender<(ClientCmdReq, Sender<ClientCmdRes>)>) {
         // unwrapping because our server is dead in the water if it can't listen on its assigned port
         let listener: TcpListener = TcpListener::bind(conf.address).unwrap();
         let mut acceptor: TcpAcceptor = listener.listen().unwrap();
@@ -72,4 +88,8 @@ impl NetListener {
         None
     }
 
+}
+
+#[cfg(test)]
+mod test {
 }
