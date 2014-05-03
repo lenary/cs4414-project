@@ -7,7 +7,7 @@ use std::vec::Vec;
 
 use serialize::{json, Decodable};
 
-use super::append_entries::AppendEntriesRequest;
+use super::events::append_entries::AppendEntriesReq;
 
 
 ///
@@ -67,7 +67,7 @@ impl Log {
     /// in the aereq if there is a mismatch between terms for the same indexed entry.
     /// This method should only be called when the AER has log entries (not heartbeat)
     ///
-    pub fn append_entries(&mut self, aereq: &AppendEntriesRequest) -> IoResult<()> {
+    pub fn append_entries(&mut self, aereq: &AppendEntriesReq) -> IoResult<()> {
         if aereq.prev_log_idx < self.idx {
             try!(self.truncate(aereq.prev_log_idx + 1));
             return Err(IoError{kind: InvalidInput,
@@ -230,7 +230,7 @@ mod test {
     use uuid::Uuid;
 
     use super::LogEntry;
-    use super::super::append_entries::AppendEntriesRequest;
+    use super::super::events::append_entries::AppendEntriesReq;
 
     static testlog: &'static str = "datalog/log.test";
 
@@ -262,9 +262,9 @@ mod test {
         let logent6 = LogEntry{idx: 6, term: 2, data: ~"f", uuid: ~"u06"};
 
         let rlog = super::Log::new(Path::new(testlog));
-        let mut aer = AppendEntriesRequest{term: 1, prev_log_idx: 0, prev_log_term: 0,
-                                           commit_idx: 2, leader_id: 9,
-                                           entries: vec!(logent1.clone(), logent2, logent3.clone(), logent4.clone())};
+        let mut aer = AppendEntriesReq{term: 1, prev_log_idx: 0, prev_log_term: 0,
+                                       commit_idx: 2, leader_id: 9,
+                                       entries: vec!(logent1.clone(), logent2, logent3.clone(), logent4.clone())};
         assert!(rlog.is_ok());
         let mut log = rlog.unwrap();
 
@@ -272,9 +272,9 @@ mod test {
         println!("1: {:?}", result);
         assert!(result.is_ok());
 
-        aer = AppendEntriesRequest{term: 2, prev_log_idx: 4, prev_log_term: 1,
-                                   commit_idx: 2, leader_id: 9,
-                                   entries: vec!(logent5.clone(), logent6)};
+        aer = AppendEntriesReq{term: 2, prev_log_idx: 4, prev_log_term: 1,
+                                commit_idx: 2, leader_id: 9,
+                                entries: vec!(logent5.clone(), logent6)};
 
         let result = log.append_entries(&aer);
         println!("2: {:?}", result);

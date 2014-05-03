@@ -16,10 +16,10 @@ pub trait Candidate {
     fn candidate_setup(&mut self) -> RaftStateTransition;
     fn candidate_teardown(&mut self);
 
-    fn candidate_append_entries_req(&mut self, req: AppendEntriesReq) -> RaftStateTransition;
+    fn candidate_append_entries_req(&mut self, req: AppendEntriesReq, chan: Sender<AppendEntriesRes>) -> RaftStateTransition;
     fn candidate_append_entries_res(&mut self, res: AppendEntriesRes) -> RaftStateTransition;
 
-    fn candidate_vote_req(&mut self, req: VoteReq) -> RaftStateTransition;
+    fn candidate_vote_req(&mut self, req: VoteReq, chan: Sender<VoteRes>) -> RaftStateTransition;
     fn candidate_vote_res(&mut self, res: VoteRes) -> RaftStateTransition;
 }
 
@@ -33,7 +33,7 @@ impl Candidate for RaftServerState {
     }
 
 
-    fn candidate_append_entries_req(&mut self, req: AppendEntriesReq) -> RaftStateTransition {
+    fn candidate_append_entries_req(&mut self, req: AppendEntriesReq, chan: Sender<AppendEntriesRes>) -> RaftStateTransition {
         Continue
     }
 
@@ -42,7 +42,7 @@ impl Candidate for RaftServerState {
     }
 
 
-    fn candidate_vote_req(&mut self, req: VoteReq) -> RaftStateTransition {
+    fn candidate_vote_req(&mut self, req: VoteReq, chan: Sender<VoteRes>) -> RaftStateTransition {
         Continue
     }
 

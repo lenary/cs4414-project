@@ -1,14 +1,15 @@
-// Events for the VoteRequest RPC
-
-use super::traits::RaftEvent;
-
-// TODO: fill this out
-pub struct VoteReq;
-pub struct VoteRes;
-
-impl RaftEvent for VoteReq {
-    // TODO: implement respond()
+#[deriving(Decodable, Encodable)]
+pub struct VoteReq {
+    // Not sure if votes need this, but they *do* need at least one field
+    // to use the #[deriving(...)] stuff.
+    pub id: uint,
+    // TODO: fill this out
 }
 
-impl RaftEvent for VoteRes {
+#[deriving(Decodable, Encodable)]
+pub struct VoteRes {
+    // Not sure if votes need this, but they *do* need at least one field
+    // to use the #[deriving(...)] stuff.
+    pub id: uint,
+    // TODO: fill this out
 }
