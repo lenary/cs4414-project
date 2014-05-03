@@ -2,12 +2,17 @@ use std::vec::Vec;
 use std::io::IoError;
 use serialize::Encodable;
 use serialize::Decodable;
+use std::io::{Acceptor, Listener, TcpListener, TcpStream};
+use std::io::net::tcp::TcpAcceptor;
 use serialize::json::{Encoder,Error};
 
 pub use self::peer::{NetPeer, NetPeerConfig};
 use super::events::{RaftMsg, VoteReq, VoteRes, AppendEntriesReq, AppendEntriesRes};
 
 pub mod peer;
+
+// Private stuff, shouldn't be used elsewhere.
+mod parsers;
 
 // TODO: put entry functions in here, like:
 // - start_peer_helper (which returns a Peer struct, including fields
@@ -36,7 +41,12 @@ impl NetListener {
      *
      */
     fn spawn_listener(conf: NetPeerConfig, peer_configs: Vec<NetPeerConfig>, from_peers_send: Sender<RaftMsg>) {
-
+        // unwrapping because our server is dead in the water if it can't listen on its assigned port
+        let listener: TcpListener = TcpListener::bind(conf.address).unwrap();
+        let mut acceptor: TcpAcceptor = listener.listen().unwrap();
+        for stream in acceptor.incoming() {
+            
+        }
     }
 
     /*
