@@ -8,13 +8,15 @@ use std::comm::Select;
 use collections::HashMap;
 use serialize::json::{Encoder,Error};
 
-pub use self::peer::{NetPeer, NetPeerConfig, RaftRpc, RpcARQ};
+pub use self::peer::NetPeer;
 use super::events::{RaftMsg, VoteReq, VoteRes, AppendEntriesReq, AppendEntriesRes,
                     ClientCmdRes, ClientCmdReq};
+use self::types::*;
 pub mod peer;
 
 // Private stuff, shouldn't be used elsewhere.
 pub mod parsers;
+mod types;
 
 // TODO: put entry functions in here, like:
 // - start_peer_helper (which returns a Peer struct, including fields
@@ -106,7 +108,7 @@ impl NetListener {
         // if we were able to send the data over the TCP connection, then we will send it
         // back out on the returned Receiver.
         let &ref netpeer = self.peer_recv.get(self.conf_dict.get(&peer));
-        match (*netpeer).send(RpcARQ(cmd)) {
+        match netpeer.send(RpcARQ(cmd)) {
             Some(reschan) => {
                 // TODO
                 None

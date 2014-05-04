@@ -4,29 +4,8 @@ use std::io::net::tcp::TcpStream;
 use std::option::Option;
 use uuid::{Uuid, UuidVersion, Version4Random};
 use super::super::events::*;
-use super::parsers::{read_network_msg};
-
-// Bare RPC types. This is the incoming type before we set up channels
-// to make Raft messages. Might not be necessary, provided we can setup
-// those channels in the functions where the RPCs are built out of network
-// bytes.
-#[deriving(Decodable, Encodable, Eq)]
-pub enum RaftRpc {
-    RpcARQ(AppendEntriesReq),
-    RpcARS(AppendEntriesRes),
-    RpcVRQ(VoteReq),
-    RpcVRS(VoteRes),
-    RpcStopReq,
-}
-
-#[deriving(Clone, Hash, Eq, TotalEq)]
-pub struct NetPeerConfig {
-    pub id: uint,
-    // The port for this field is the peer's *listening* port, not necessarily the
-    // port we will get our request from. Hence the peer should send its id when it
-    // makes a new request to us.
-    pub address: SocketAddr,
-}
+use super::parsers::{read_rpc, as_network_msg};
+use super::types::*;
 
 // Each peer should have one of these, and they should be consistent across
 // nodes.
@@ -68,14 +47,16 @@ impl NetPeer {
                 self.stream = Some(~stream.clone());
                 let sender = self.rpc_send.clone();
                 spawn(proc() {
-                    let msg = read_network_msg(BufferedReader::new(stream.clone()));
-                    debug!("{}", msg);
-                    // TODO: Actually read/parse.
-                    let vote = RpcVRQ(VoteReq {
-                        id: 0,
-                        uuid: Uuid::new(Version4Random).unwrap(),
-                    });
-                    sender.send(vote);
+                    let either_rpc = read_rpc(stream.clone());
+                    // TODO: something
+                    match either_rpc {
+                        Ok(rpc) => {
+                            sender.send(rpc);
+                        }
+                        Err(e) => {
+                            debug!("{}", e);
+                        }
+                    }
                 });
                 true
             }
@@ -137,8 +118,9 @@ mod test {
     
     use super::super::super::events::*;
     use uuid::{Uuid, UuidVersion, Version4Random};
-    use super::{NetPeer, NetPeerConfig, RaftRpc, RpcVRQ};
-    use super::super::parsers::frame_msg;
+    use super::NetPeer;
+    use super::super::types::*;
+    use super::super::parsers::{as_network_msg};
 
     /*
      * Can we parse content length fields?
@@ -172,31 +154,24 @@ mod test {
         peer1.try_spawn();
         peer2.try_spawn();
         let mut count = 0;
+        let vote = RpcVRQ(VoteReq {
+            term: 0,
+            candidate_id: 0,
+            last_log_index: 0,
+            last_log_term: 0,
+            uuid: Uuid::new(Version4Random).unwrap(),
+        });
         for mut stream in acceptor.incoming() {
-            let msg = frame_msg("Hello world", 1);
-            stream.write(msg.as_bytes());
+            let vote_bytes = as_network_msg(vote.clone());
+            stream.write(vote_bytes);
             count += 1;
             if count > 1 {
                 break;
             }
         }
         let mut replies = 0;
-        match recv1.recv() {
-            RpcVRQ(vote) => {
-                assert!(vote.id == 0);
-                replies += 1;
-            },
-            _ => fail!(),
-        }
-        match recv2.recv() {
-            RpcVRQ(vote) => {
-                assert!(vote.id == 0);
-                replies += 1;
-            },
-            _ => fail!(),
-        }
+        assert!(recv1.recv() == vote);
+        assert!(recv2.recv() == vote);
         drop(acceptor);
-        assert!(count == 2);
-        assert!(replies == 2);
     }
 }

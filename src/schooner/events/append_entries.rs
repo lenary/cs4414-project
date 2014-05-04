@@ -6,7 +6,7 @@ use serialize::{json, Decodable};
 
 use super::super::consistent_log::LogEntry;
 
-#[deriving(Decodable, Encodable, Eq)]
+#[deriving(Decodable, Encodable, Eq, Clone, Show)]
 pub struct AppendEntriesReq {
     // Raft information
     pub term: u64,          // current term of leader
@@ -18,7 +18,7 @@ pub struct AppendEntriesReq {
     pub uuid: Uuid,
 }
 
-#[deriving(Decodable, Encodable, Eq)]
+#[deriving(Decodable, Encodable, Eq, Clone, Show)]
 pub struct AppendEntriesRes {
     pub success: bool,
     pub term: u64,
