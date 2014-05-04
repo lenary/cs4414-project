@@ -1,15 +1,17 @@
-#[deriving(Decodable, Encodable)]
+use uuid::Uuid;
+
+#[deriving(Decodable, Encodable, Eq, Clone, Show)]
 pub struct VoteReq {
-    // Not sure if votes need this, but they *do* need at least one field
-    // to use the #[deriving(...)] stuff.
-    pub id: uint,
-    // TODO: fill this out
+    pub term: uint,
+    pub candidate_id: uint,
+    pub last_log_index: uint,
+    pub last_log_term: uint,
+    pub uuid: Uuid,
 }
 
-#[deriving(Decodable, Encodable)]
+#[deriving(Decodable, Encodable, Eq, Clone, Show)]
 pub struct VoteRes {
-    // Not sure if votes need this, but they *do* need at least one field
-    // to use the #[deriving(...)] stuff.
-    pub id: uint,
-    // TODO: fill this out
+    pub term: uint,
+    pub vote_granted: bool,
+    pub uuid: Uuid,
 }

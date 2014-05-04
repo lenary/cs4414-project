@@ -1,4 +1,4 @@
-
+#![feature(globs)]
 use super::events::*;
 
 use super::server::RaftServerState;
@@ -27,22 +27,36 @@ pub trait Leader {
 // TODO: Real Implementations
 impl Leader for RaftServerState {
     fn leader_setup(&mut self) -> RaftStateTransition {
+        //send initial heartbeat to all followers
+        self.leader_heartbeat();
         Continue
     }
 
     fn leader_teardown(&mut self) {
+        self.new_state(RaftFollower);
     }
 
     fn leader_heartbeat(&mut self) -> RaftStateTransition {
+        //make an empty append entry request using self.leader_append_entries_req()
         Continue
     }
 
 
     fn leader_append_entries_req(&mut self, req: AppendEntriesReq, chan: Sender<AppendEntriesRes>) -> RaftStateTransition {
+        //TODO
+        //add entry to local log
+
+        //add entry to consistent log
+        //send req to followers
+
         Continue
     }
 
     fn leader_append_entries_res(&mut self, res: AppendEntriesRes) -> RaftStateTransition {
+        //TODO
+        //listen for a conform (majority of peers) of the log
+        //pass the log into application state machine
+        //pass the log to client using RaftAppMsg<AppMsg>
         Continue
     }
 
