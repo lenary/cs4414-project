@@ -4,7 +4,7 @@ extern crate serialize;
 use std::io::{BufferedReader,BufferedWriter,File,IoResult,IoError,InvalidInput,EndOfFile,Append,Open,Read,Write};
 use std::io::fs;
 use std::vec::Vec;
-
+use uuid::{Uuid, UuidVersion, Version4Random};
 use serialize::{json, Decodable};
 
 use super::events::append_entries::AppendEntriesReq;
@@ -25,7 +25,7 @@ pub struct Log {
     pub logentries: Vec<LogEntry>,  // cache of all entries logged to file (TODO: future keep only last 100? 1000?)
 }
 
-#[deriving(Decodable, Encodable, Clone, Show)]
+#[deriving(Decodable, Encodable, Clone, Show, Eq)]
 pub struct LogEntry {
     pub idx:  u64,  // raft idx in log
     pub term: u64,  // raft term in log
@@ -225,9 +225,9 @@ fn read_last_entry(path: &Path) -> IoResult<~str> {
 mod test {
     use std::io::fs;
     use std::io::{BufferedReader,File};
-
+    
     use serialize::{json, Decodable};
-    use uuid::Uuid;
+    use uuid::{Uuid, UuidVersion, Version4Random};
 
     use super::LogEntry;
     use super::super::events::append_entries::AppendEntriesReq;
@@ -264,6 +264,7 @@ mod test {
         let rlog = super::Log::new(Path::new(testlog));
         let mut aer = AppendEntriesReq{term: 1, prev_log_idx: 0, prev_log_term: 0,
                                        commit_idx: 2, leader_id: 9,
+                                       uuid: Uuid::new(Version4Random).unwrap(),
                                        entries: vec!(logent1.clone(), logent2, logent3.clone(), logent4.clone())};
         assert!(rlog.is_ok());
         let mut log = rlog.unwrap();
@@ -274,6 +275,7 @@ mod test {
 
         aer = AppendEntriesReq{term: 2, prev_log_idx: 4, prev_log_term: 1,
                                 commit_idx: 2, leader_id: 9,
+                                uuid: Uuid::new(Version4Random).unwrap(),
                                 entries: vec!(logent5.clone(), logent6)};
 
         let result = log.append_entries(&aer);
@@ -355,4 +357,5 @@ mod test {
         assert!(result.is_err());
     }
 }
+
 
