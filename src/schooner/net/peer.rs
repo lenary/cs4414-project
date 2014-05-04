@@ -7,78 +7,116 @@ use super::super::events::*;
 use super::parsers::{read_rpc, as_network_msg};
 use super::types::*;
 
+static CONNECT_TIMEOUT: u64 = 3000;
+
 // Each peer should have one of these, and they should be consistent across
 // nodes.
 pub struct NetPeer {
-    pub conf: ~NetPeerConfig,
+    pub conf: NetPeerConfig,
     // If we have an open connection to this peer, then this will be Some(...).
     pub stream: Option<TcpStream>,
-    // When we iterate over the NetPeers, we can check if we have a reply from
-    // an AppendEntriesReq/etc. on this receiver.
-    // In this case, this means when we send an AppendEntriesReq up to Schooner,
-    // we need to assign this as the receiving end of the AppendEntriesReq's
-    // to_leader channel.
-    rpc_send: ~Sender<RaftRpc>,
+    to_raft: Sender<RaftMsg>,
+    mgmt_port: Receiver<MgmtMsg>,
 }
 
 impl NetPeer {
+
     /*
-     * sender: the port we can use to send received commands back to the server.
-     * should be a clone of a single Sender attached to a single Receiver, basically.
-     * since each command will contain a port we can use for replies, we don't
-     * need two ports in the arguments.
+     * id: id of local Raft server
+     * conf: configuration for network peer
+     * to_raft: Sender for telling Raft about network messages
+     * mgmt_port: for peer manager
      */
-    pub fn new(config: ~NetPeerConfig, sender: ~Sender<RaftRpc>) -> NetPeer {
+    pub fn spawn(id: uint, conf: NetPeerConfig, to_raft: Sender<RaftMsg>) -> Sender<MgmtMsg> {
+        let (mgmt_send, mgmt_port) = channel();
+        spawn(proc() {
+            let netpeer = NetPeer::new(conf, to_raft, mgmt_port);
+        });
+        mgmt_send
+    }
+
+    
+    fn new(config: NetPeerConfig, to_raft: Sender<RaftMsg>, mgmt_port: Receiver<MgmtMsg>) -> NetPeer {
         NetPeer {
             conf: config,
             stream: None,
-            rpc_send: sender,
+            to_raft: to_raft,
+            mgmt_port: mgmt_port,
         }
     }
 
-    /*
-     * Try connecting to the peer from here. Note that this is only one way
-     * we can establish a peer connection - the other way is if the peer tries
-     * to connect to *us*.
-     */
-    pub fn try_spawn(&mut self) -> bool {
-        if self.stream.is_some() {
-            return false;
-        }
-        match TcpStream::connect_timeout(self.conf.address, 10000) {
+    fn try_connect(&mut self) -> Option<TcpStream> {
+        match TcpStream::connect_timeout(self.conf.address, CONNECT_TIMEOUT) {
             Ok(mut stream) => {
                 stream.write_uint(self.conf.id);
-                stream.write_line("");
-                self.stream = Some(stream.clone());
-                self.listen();
-                true
+                debug!("Sent handshake req to {}", self.conf.address);
+                Some(stream.clone())
             }
             err => {
-                false
+                None
             }
         }
     }
 
     fn listen(&mut self) {
+        while(self.stream.is_none()) {
+            match self.mgmt_port.try_recv() {
+                Ok(msg) => {
+                    match msg {
+                        AttachStreamMsg(id, stream) => {
+                            if id == self.conf.id {
+                                self.attach_stream(stream);
+                            }
+                        }
+                        _ => {
+                            // TODO: send something on failure?
+                        }
+                    }
+                }
+                _ => {
+                    self.try_connect();
+                }
+            }
+        }
         if self.stream.is_none() {
             return;
         }
         let stream = self.stream.clone().unwrap();
-        let sender = self.rpc_send.clone();
-        spawn(proc() {
-            loop {
-                let either_rpc = read_rpc(stream.clone());
-                match either_rpc {
-                    Ok(rpc) => {
-                        sender.send(rpc);
-                    }
-                    Err(e) => {
-                        debug!("Dropped peer: {}", e);
-                        break;
+        let sender = self.to_raft.clone();
+        loop {
+            let either_rpc = read_rpc(stream.clone());
+            match either_rpc {
+                Ok(rpc) => {
+                    match rpc {
+                        RpcARQ(aereq) => {
+                            let (resp_send, resp_recv) = channel();
+                            self.to_raft.send(ARQ(aereq, resp_send));
+                            let aeres = resp_recv.recv();
+                            stream.write(as_network_msg(RpcARS(aeres)));
+                        }
+                        RpcARS(aeres) => {
+                            self.to_raft.send(ARS(aeres));
+                        }
+                        RpcVRQ(votereq) => {
+                            let (resp_send, resp_recv) = channel();
+                            self.to_raft.send(VRQ(votereq, resp_send));
+                            let voteres = resp_recv.recv();
+                            stream.write(as_network_msg(RpcVRS(voteres)));
+                        }
+                        RpcVRS(voteres) => {
+                            self.to_raft.send(VRS(voteres));
+                        }
+                        RpcStopReq => {
+                            self.to_raft.send(StopReq);
+                        }
                     }
                 }
+                Err(e) => {
+                    debug!("Dropped peer: {}", e);
+                    break;
+                }
             }
-        });
+        }
         self.stream = None;
     }
 
@@ -90,11 +128,11 @@ impl NetPeer {
      * an open connection to this peer (this is an invalid state; we should probably
      * crash or handle it somehow).
      */
-    pub fn add_connection(&mut self, stream: &TcpStream) -> bool {
+    pub fn attach_stream(&mut self, stream: TcpStream) -> bool {
         if self.stream.is_some() {
             return false;
         }
-        self.stream = Some(stream.clone());
+        self.stream = Some(stream);
         true
     }
 
@@ -105,7 +143,7 @@ impl NetPeer {
         if self.stream.is_none() {
             return None;
         }
-        let (rpc_send, rpc_recv) = channel();
+        let (to_raft, rpc_recv) = channel();
         let stream = self.stream.clone().unwrap();
         spawn(proc() {
             //stream.write(as_network_msg(cmd));
@@ -114,7 +152,7 @@ impl NetPeer {
             reply = // wait for a reply on the TCP connection
             // Probably we should break the channel if the TCPstream dies,
             // so the leader will know we didn't get a reply.
-            rpc_send.send(reply);
+            to_raft.send(reply);
             */
          });
         Some(rpc_recv)
@@ -142,7 +180,7 @@ mod test {
      */
     #[test]
     fn test_spawn() {
-        let pc = ~NetPeerConfig {
+        let pc = NetPeerConfig {
             id: 1,
             address: SocketAddr {
                 ip: Ipv4Addr(127, 0, 0, 1),
@@ -155,8 +193,8 @@ mod test {
         };
         let (send1, recv1) = channel();
         let (send2, recv2) = channel();
-        let mut peer1 = NetPeer::new(pc.clone(), ~send1);
-        let mut peer2 = NetPeer::new(pc, ~send2);
+        let mut peer1_sd = NetPeer::spawn(2, pc.clone(), send1);
+        let mut peer2_sd = NetPeer::spawn(3, pc, send2);
         let listen_addr = SocketAddr {
             ip: Ipv4Addr(127, 0, 0, 1),
             port: 8844,
@@ -164,8 +202,6 @@ mod test {
         let listener: TcpListener = TcpListener::bind(listen_addr).unwrap();
         let mut acceptor: TcpAcceptor = listener.listen().unwrap();
         // Spawn two peers
-        peer1.try_spawn();
-        peer2.try_spawn();
         let mut count = 0;
         // Send each peer the vote
         let vote = RpcVRQ(VoteReq {
@@ -185,8 +221,18 @@ mod test {
         }
         let mut replies = 0;
         // We should get the votes back out on the port that we were waiting on
-        assert!(recv1.recv() == vote);
-        assert!(recv2.recv() == vote);
+        match recv1.recv() {
+            VRQ(recvote, chan) => {
+                assert!(recvote.uuid = vote.uuid);
+            }
+            _ => { fail!(); }
+        }
+        match recv2.recv() {
+            VRQ(recvote, chan) => {
+                assert!(recvote.uuid = vote.uuid);
+            }
+            _ => { fail!(); }
+        }
         drop(acceptor);
     }
 }

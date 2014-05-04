@@ -1,4 +1,5 @@
 use std::io::net::ip::SocketAddr;
+use std::io::TcpStream;
 use super::super::events::*;
 
 // Bare RPC types. This is the incoming type before we set up channels
@@ -12,6 +13,13 @@ pub enum RaftRpc {
     RpcVRQ(VoteReq),
     RpcVRS(VoteRes),
     RpcStopReq,
+}
+
+pub enum MgmtMsg {
+    // Peer ID and a TcpStream to attach to
+    AttachStreamMsg(uint, TcpStream),
+    SendMsg(RaftRpc),
+    StopMsg,
 }
 
 #[deriving(Clone, Hash, Eq, TotalEq, Show)]
