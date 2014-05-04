@@ -1,4 +1,6 @@
 #![allow(dead_code)]
+#![feature(globs)]
+#![feature(macro_rules)]
 
 use super::events::*;
 use super::events::append_entries::{AppendEntriesReq, AppendEntriesRes};
@@ -6,6 +8,7 @@ use super::events::{VoteReq, VoteRes};
 use super::follower::Follower;   // A trait with impl for RaftServerState
 use super::candidate::Candidate; // A trait with impl for RaftServerState
 use super::leader::Leader;       // A trait with impl for RaftServerState
+use super::consistent_log::Log;
 
 use std::comm::*;
 use std::io::timer::Timer;
@@ -24,7 +27,7 @@ use std::vec::Vec;
 //
 // 2. the Application State Machine task - This is the
 //    strongly-consistent replicated state machine that is custom
-//    per-application. It recieves messages as they are committed to
+//    per-application. It receives messages as they are committed to
 //    the log.
 //
 // 3. the Application Endpoint tasks- This is the set of tasks that
@@ -77,8 +80,8 @@ pub struct RaftServer {
 }
 
 // static duplex to Application State Machine (from somewhere else)
-// static reciever from Application Endpoint  (
-// static reciever from Peer
+// static receiver from Application Endpoint  (
+// static receiver from Peer
 
 // Some ideas of how to use with Application Tasks:
 //
@@ -151,6 +154,7 @@ pub struct RaftServerState {
     to_app_sm:     Sender<(ClientCmdReq, Sender<ClientCmdRes>)>,
 
     peers:         Vec<()>,
+    log:           Log
 }
 
 #[deriving(Eq,Clone,Show)]
@@ -217,10 +221,11 @@ impl RaftServerState {
             is_setup: false,
             to_app_sm: to_app_sm,
             peers: peers,
+            log: *Log::new(Path::new(&"datalog/log.test")).unwrap() //how to properly index the log files?
         }
     }
 
-    fn new_state(&mut self, new_state: RaftNextState) {
+    pub fn new_state(&mut self, new_state: RaftNextState) {
         self.current_state = new_state;
         self.is_setup = false;
     }
@@ -339,7 +344,7 @@ impl RaftServerState {
     }
 
     fn handle_append_entries_req(&mut self, req: AppendEntriesReq, chan: Sender<AppendEntriesRes>) -> RaftStateTransition {
-        state_proxy!(leader_append_entries_req, 
+        state_proxy!(leader_append_entries_req,
                      candidate_append_entries_req,
                      follower_append_entries_req,
                      req, chan)

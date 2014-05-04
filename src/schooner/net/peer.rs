@@ -75,7 +75,7 @@ impl NetPeer {
     /*
      * If the node chose to connect to us, then we got a connection on our listening
      * address and need to give the stream to us here.
-     * 
+     *
      * Returns: True if we successfully connected, false if we thought we already had
      * an open connection to this peer (this is an invalid state; we should probably
      * crash or handle it somehow).
