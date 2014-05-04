@@ -25,49 +25,37 @@ fn make_id_hdr(id: uint) -> ~str{
     ID_TOKEN + ": " + id.to_str()
 }
 
-fn parse_content_length(len_hdr: &str) -> IoResult<uint> {
-    let re = regex!(r"Content-Length: (?P<length>\d+)");
-    let strlen = re.captures(len_hdr).and_then(|c| Some(c.name("length")));
-    let len: Option<uint> = strlen.and_then(|l| from_str(l));
-    match len {
-        Some(len) => Ok(len),
+fn to_result<T>(ok: Option<T>, err: &'static str) -> Result<T, IoError> {
+    match ok {
+        Some(res) => Ok(res),
         None => Err(IoError{
             kind: InvalidInput,
-            desc: "Failed parsing content length",
+            desc: err,
             detail: None,
         }),
     }
+}
+
+fn parse_content_length(len_hdr: &str) -> IoResult<uint> {
+    to_result(regex!(r"Content-Length: (\d+)")
+        .captures(len_hdr)
+        .map(|c| c.at(1))
+        .and_then(|l| from_str(l)), "Failed parsing content length")
 }
 
 fn parse_server_id(id_hdr: &str) -> IoResult<uint> {
-    let re = regex!(r"Server-Id: (?P<id>\d+)");
-    let strid = re.captures(id_hdr).and_then(|c| Some(c.name("id")));
-    let id: Option<uint> = strid.and_then(|i| from_str(i));
-    match id {
-        Some(uid) => Ok(uid),
-        None => Err(IoError {
-            kind: InvalidInput,
-            desc: "Failed parsing server ID",
-            detail: None,
-        }),
-    }
+    to_result(regex!(r"Server-Id: (\d+)")
+        .captures(id_hdr)
+        .map(|c| c.at(1))
+        .and_then(|i| from_str(i)), "Failed parsing server ID")
 }
 
 pub fn read_network_msg(mut reader: BufferedReader<TcpStream>) -> IoResult<~str> {
-    let mut length: uint;
-    let length = try!(reader.read_line().and_then(|l| parse_content_length(l)));
-    let id_hdr = reader.read_line().map_err(|e| "Reading failed");
-    let id = id_hdr.map(|i| parse_server_id(i));
-    let mut buf: Vec<u8> = Vec::from_elem(length, 0u8);
+    let length  = try!(parse_content_length(try!(reader.read_line())));
+    let id      = try!(parse_server_id(     try!(reader.read_line())));
     let content = try!(reader.read_exact(length));
-    match content.container_as_str() {
-        Some(s) => Ok(s.to_owned()),
-        None => Err(IoError{
-            kind: InvalidInput,
-            desc: "Conversion of Network message from bytes to str failed",
-            detail: None,
-        }),
-    }
+    to_result(content.container_as_str().map(|c| c.to_owned()),
+        "Conversion of Network message from bytes to str failed")
 }
 
 #[cfg(test)]
