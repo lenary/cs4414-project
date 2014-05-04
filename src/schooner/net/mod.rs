@@ -13,10 +13,12 @@ use serialize::json::{Encoder,Error};
 use std::io::timer::sleep;
 
 use super::events::*;
+use self::peer::*;
 use self::types::*;
 
 // Private stuff, shouldn't be used elsewhere.
 pub mod parsers;
+mod peer;
 mod types;
 
 static CONNECT_TIMEOUT: u64 = 3000;
