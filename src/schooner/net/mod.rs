@@ -12,10 +12,8 @@ use sync::{RWLock, Arc};
 use serialize::json::{Encoder,Error};
 use std::io::timer::sleep;
 
-pub use self::peer::NetPeer;
 use super::events::*;
 use self::types::*;
-pub mod peer;
 
 // Private stuff, shouldn't be used elsewhere.
 pub mod parsers;
@@ -54,12 +52,12 @@ macro_rules! may_shutdown(
 )
 
 macro_rules! try_update (
-    ($p: ident, $m: ident) => {
-        match $p.try_recv() {
+    ($s: ident, $p: ident, $m: ident) => {
+        match $s.$p.try_recv() {
             Ok((incoming_id, incoming_stream)) => {
-                let has_stream: bool = $m.get(&incoming_id).is_some();
+                let has_stream: bool = $s.$m.get(&incoming_id).is_some();
                 if !has_stream {
-                    $m.insert(incoming_id, Some(incoming_stream));
+                    $s.$m.insert(incoming_id, Some(incoming_stream));
                 }
             }
             Err(Disconnected) => {
@@ -84,24 +82,44 @@ pub struct NetListener {
     // config info for this peer
     conf: NetPeerConfig,
     // Maps peer IDs to their associated TCP streams.
+    peer_id_map: HashMap<uint, Option<TcpStream>>,
+    // Peer configurations, stored in a concurrency construct.
     peer_configs: ~Vec<NetPeerConfig>,
     // Sender we use to talk back up to Raft
-    shutdown_sender: Sender<uint>,
+    from_peers_send: Sender<RaftMsg>,
+    // Receives peer connections as (id, stream) from listen_peers()
+    peer_connect_recv: Receiver<(uint, TcpStream)>,
+    // Signal from main raft process to do a shutdown.
+    shutdown_signal: Receiver<uint>,
+    // channels we send the shutdown signal to if we receive one
+    shutdown_senders: Vec<Sender<uint>>,
 }
 
 impl NetListener {
-    pub fn new(conf: NetPeerConfig,
-    peer_configs: ~Vec<NetPeerConfig>,
-    from_peers_send: Sender<RaftMsg>,
-    from_client_send: Sender<(ClientCmdReq, Sender<ClientCmdRes>)>) -> NetListener {
-        let (shutdown_sender, shutdown_receiver) = channel();
+    pub fn new(conf: NetPeerConfig, peer_configs: ~Vec<NetPeerConfig>, from_peers_send: Sender<RaftMsg>, from_client_send: Sender<(ClientCmdReq, Sender<ClientCmdRes>)>, shutdown_signal: Receiver<uint>) -> NetListener {
+        let (peer_connect_send, peer_connect_recv) = channel();
+        let (peer_shutdown_send, peer_shutdown_recv) = channel();
+        NetListener::listen_peers(conf.id, conf.address, peer_connect_send, peer_shutdown_recv);
+        let (peer_connect_send, peer_connect_recv) = channel();
+        let (client_shutdown_send, client_shutdown_recv) = channel();
+        NetListener::listen_clients(conf.id, conf.client_addr, from_client_send, client_shutdown_recv);
         let mut this = NetListener {
             conf: conf,
+            peer_id_map: HashMap::new(),
             peer_configs: peer_configs.clone(),
-            shutdown_sender: shutdown_sender,
+            from_peers_send: from_peers_send,
+            peer_connect_recv: peer_connect_recv,
+            shutdown_signal: shutdown_signal,
+            shutdown_senders: Vec::new(),
         };
-        NetListener::main_loop(conf, peer_configs, from_peers_send, from_client_send,
-                       shutdown_receiver);
+        this.shutdown_senders.push(peer_shutdown_send);
+        this.shutdown_senders.push(client_shutdown_send);
+        for conf in peer_configs.iter() {
+            this.peer_id_map.insert(conf.id, None);
+            try_update!(this, peer_connect_recv, peer_id_map);
+        }
+        this.connect_peers();
+        this.main_loop();
         this
     }
 
@@ -142,62 +160,40 @@ impl NetListener {
          */
         None
     }
-
-    fn shutdown(&mut self) {
-        self.shutdown_sender.send(0);
-    }
     
     fn send_vote_req(peer: NetPeerConfig, cmd: VoteReq) -> Option<Receiver<VoteRes>> {
         None
     }
 
-    fn main_loop(conf: NetPeerConfig,
-        configs: &Vec<NetPeerConfig>,
-        from_peers_send: Sender<RaftMsg>,
-        from_client_send: Sender<(ClientCmdReq, Sender<ClientCmdRes>)>,
-        shutdown_signal: Receiver<uint>) {
-        spawn(proc() {
-            let mut id_map: HashMap<uint, Option<TcpStream>> = HashMap::new();
-            let mut shutdown_senders = Vec::new();
-            let (peer_connect_send, peer_connect_recv):
-                (Sender<(uint, TcpStream)>, Receiver<(uint, TcpStream)>) = channel();
-            let (peer_shutdown_send, peer_shutdown_recv) = channel();
-            NetListener::listen_peers(conf.id, conf.address, peer_connect_send, peer_shutdown_recv);
-            let (client_shutdown_send, client_shutdown_recv) = channel();
-            NetListener::listen_clients(conf.id, conf.client_addr, from_client_send, client_shutdown_recv);
-            shutdown_senders.push(peer_shutdown_send);
-            shutdown_senders.push(client_shutdown_send);
-            for conf in configs.iter() {
-                id_map.insert(conf.id, None);
-                try_update!(peer_connect_recv, id_map);
-            }
-            loop {
-                may_shutdown!(shutdown_signal);
-                try_update!(peer_connect_recv, id_map);
-                NetListener::connect_peers(conf.id, configs, &id_map);
-                sleep(200);
-            }
-        });
+    fn main_loop(&mut self) {
+        loop {
+            may_shutdown!(self, shutdown_signal);
+            try_update!(self, peer_connect_recv, peer_id_map);
+            self.connect_peers();
+        }
     }
     
-    fn connect_peers(this_id: uint, configs: &Vec<NetPeerConfig>, id_map: &HashMap<uint, Option<TcpStream>>) {
+    fn connect_peers(&mut self) {
+        let configs = self.peer_configs.clone();
         for conf in configs.iter() {
             let id = conf.id;
-            if id_map.get(&id).is_none() {
-                debug!("{}: Trying to connect to peer {}", this_id, id);
-                let mstream = NetListener::try_connect(conf);
+            if self.peer_id_map.get(&id).is_none() {
+                debug!("{}: Trying to connect to peer {}", self.conf.id, id);
+                let mstream = self.try_connect(id);
+                may_shutdown!(self, shutdown_signal);
                 match mstream {
                     Some(mut stream) => {
-                        if id_map.get(&id).is_none() {
-                            debug!("{}: Initiated a connection with {} via {}", this_id, id, stream.socket_name());
-                            id_map.insert(id, Some(stream));
+                        may_shutdown!(self, shutdown_signal);
+                        if self.peer_id_map.get(&id).is_none() {
+                            debug!("{}: Initiated a connection with {} via {}", self.conf.id, id, stream.socket_name());
+                            self.peer_id_map.insert(id, Some(stream));
                         }
                         else {
                             drop(stream);
                         }
                     }
                     None => {
-                        debug!("{}, Couldn't get a connection to id: {}", this_id, id);
+                        debug!("{}, Couldn't get a connection to id: {}", self.conf.id, id);
                     }
                 }
             }
@@ -281,11 +277,15 @@ impl NetListener {
         });
     }
 
-    fn try_connect(peer: &NetPeerConfig) -> Option<TcpStream> {
-        match TcpStream::connect_timeout(peer.address, CONNECT_TIMEOUT) {
+    fn try_connect(&mut self, peer_id: uint) -> Option<TcpStream> {
+        let peer = self.lookup_peer_config(peer_id);
+        if peer.is_none() {
+            return None;
+        }
+        match TcpStream::connect_timeout(peer.unwrap().address, CONNECT_TIMEOUT) {
             Ok(mut stream) => {
-                stream.write_uint(peer.id);
-                debug!("Sent handshake req to {}", peer.id);
+                stream.write_uint(peer.unwrap().id);
+                debug!("Sent handshake req to {}", peer_id);
                 Some(stream.clone())
             }
             err => {
@@ -336,13 +336,14 @@ mod test {
         pc_vec2.push(pc1);
         let (from_peers_send1, from_peers_recv1) = channel();
         let (from_client_send1, from_client_recv1) = channel();
+        let (shutdown_send1, shutdown_recv1) = channel();
         let (from_peers_send2, from_peers_recv2) = channel();
         let (from_client_send2, from_client_recv2) = channel();
-        let mut nl1 = NetListener::new(pc1, pc_vec1, from_peers_send1, from_client_send1);
-        let mut nl2 = NetListener::new(pc2, pc_vec2, from_peers_send2, from_client_send2);
+        let (shutdown_send2, shutdown_recv2) = channel();
+        let mut nl1 = NetListener::new(pc1, pc_vec1, from_peers_send1, from_client_send1, shutdown_recv1);
+        let mut nl2 = NetListener::new(pc2, pc_vec2, from_peers_send2, from_client_send2, shutdown_recv2);
         sleep(5000);
-        nl1.shutdown();
-        nl2.shutdown();
+        debug!("Sending shutdown");
     }
 
     fn connect_handshake(id: uint, addr: SocketAddr) {
