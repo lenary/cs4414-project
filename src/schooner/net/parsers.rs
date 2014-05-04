@@ -1,10 +1,12 @@
 use std::io::{TcpStream, BufferedReader, IoResult, IoError, InvalidInput};
+use regex::*;
+use std::path::BytesContainer;
 use std::slice::bytes;
 use std::str::from_utf8;
 use std::char::*;
 
 static ID_TOKEN: &'static str = "Server-Id";
-static LENGTH_TOKEN: &'static str = "Content-length";
+static LENGTH_TOKEN: &'static str = "Content-Length";
 
 /*
  * Wrap a string in the right headers for it to be sent over the network.
@@ -24,73 +26,47 @@ fn make_id_hdr(id: uint) -> ~str{
 }
 
 fn parse_content_length(len_hdr: &str) -> IoResult<uint> {
-    if !len_hdr.starts_with(LENGTH_TOKEN + ":") {
-        return Err(IoError{kind: InvalidInput,
-                           desc: "Length field not in message header.",
-                           detail: Some(format!("length line parsed: {:s}", len_hdr))});
-    }
-
-    let parts: Vec<&str> = len_hdr.split(':').collect();
-    if parts.len() != 2 {
-        return Err(IoError{kind: InvalidInput,
-                           desc: "More than one colon in length header.",
-                           detail: Some(format!("length line parsed: {:s}", len_hdr))});
-    }
-
-    let lenstr = parts.get(1).trim();
-    let result: IoResult<uint> = match from_str::<uint>(lenstr) {
+    let re = regex!(r"Content-Length: (?P<length>\d+)");
+    let strlen = re.captures(len_hdr).and_then(|c| Some(c.name("length")));
+    let len: Option<uint> = strlen.and_then(|l| from_str(l));
+    match len {
         Some(len) => Ok(len),
-        None => Err(IoError{kind: InvalidInput,
-                           desc: "More than one colon in length header.",
-                           detail: Some(format!("length line parsed: {:s}", len_hdr))}),
-    };
-    result
+        None => Err(IoError{
+            kind: InvalidInput,
+            desc: "Failed parsing content length",
+            detail: None,
+        }),
+    }
 }
 
 fn parse_server_id(id_hdr: &str) -> IoResult<uint> {
-    if !id_hdr.starts_with(ID_TOKEN + ":") {
-        return Err(IoError{kind: InvalidInput,
-                           desc: "Id field not in message header.",
-                           detail: Some(format!("length line parsed: {:s}", id_hdr))});
+    let re = regex!(r"Server-Id: (?P<id>\d+)");
+    let strid = re.captures(id_hdr).and_then(|c| Some(c.name("id")));
+    let id: Option<uint> = strid.and_then(|i| from_str(i));
+    match id {
+        Some(uid) => Ok(uid),
+        None => Err(IoError {
+            kind: InvalidInput,
+            desc: "Failed parsing server ID",
+            detail: None,
+        }),
     }
-
-    let parts: Vec<&str> = id_hdr.split(':').collect();
-    if parts.len() != 2 {
-        return Err(IoError{kind: InvalidInput,
-                           desc: "More than one colon in id header.",
-                           detail: Some(format!("length line parsed: {:s}", id_hdr))});
-    }
-
-    let idstr = parts.get(1).trim();
-    let result: IoResult<uint> = match from_str::<uint>(idstr) {
-        Some(id) => Ok(id),
-        None => Err(IoError{kind: InvalidInput,
-                            desc: "More than one colon in id header.",
-                            detail: Some(format!("length line parsed: {:s}", id_hdr))}),
-    };
-    result
 }
 
 pub fn read_network_msg(mut reader: BufferedReader<TcpStream>) -> IoResult<~str> {
     let mut length: uint;
-    let length_hdr = try!(reader.read_line());
-    let length = try!(parse_content_length(length_hdr));
-    let id_hdr = try!(reader.read_line());
-    let id = try!(parse_server_id(id_hdr));
+    let length = try!(reader.read_line().and_then(|l| parse_content_length(l)));
+    let id_hdr = reader.read_line().map_err(|e| "Reading failed");
+    let id = id_hdr.map(|i| parse_server_id(i));
     let mut buf: Vec<u8> = Vec::from_elem(length, 0u8);
-    let nread = try!(reader.read(buf.as_mut_slice()));
-    if nread != length {
-        return Err(IoError{kind: InvalidInput,
-                           desc: "Network message read of specified bytes failed",
-                           detail: Some(
-                                   format!("Expected {} bytes, but read {} bytes",
-                                   length, nread))});
-    }
-    match from_utf8(buf.as_slice()) {
+    let content = try!(reader.read_exact(length));
+    match content.container_as_str() {
         Some(s) => Ok(s.to_owned()),
-        None => Err(IoError{kind: InvalidInput,
-                            desc: "Conversion of Network message from bytes to str failed",
-                            detail: None})
+        None => Err(IoError{
+            kind: InvalidInput,
+            desc: "Conversion of Network message from bytes to str failed",
+            detail: None,
+        }),
     }
 }
 
@@ -141,11 +117,13 @@ mod test {
         spawn(proc() {
             let mut client_stream = TcpStream::connect(listen_addr);
             let msg = frame_msg("Hello world", 14);
-            debug!("Client sending msg: {}", msg);
             client_stream.write(msg.as_bytes());
         });
         for server_stream in acceptor.incoming() {
-            assert!(read_network_msg(BufferedReader::new(server_stream.unwrap())).unwrap() == ~"Hello world");
+            let reader = BufferedReader::new(server_stream.unwrap());
+            let result = read_network_msg(reader);
+            assert!(result.is_ok());
+            assert!(result.unwrap() == ~"Hello world");
             break;
         }
         drop(acceptor);

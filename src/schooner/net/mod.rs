@@ -8,7 +8,7 @@ use std::comm::Select;
 use collections::HashMap;
 use serialize::json::{Encoder,Error};
 
-pub use self::peer::{NetPeer, NetPeerConfig, RaftRpc};
+pub use self::peer::{NetPeer, NetPeerConfig, RaftRpc, RpcARQ};
 use super::events::{RaftMsg, VoteReq, VoteRes, AppendEntriesReq, AppendEntriesRes,
                     ClientCmdRes, ClientCmdReq};
 pub mod peer;
@@ -102,10 +102,19 @@ impl NetListener {
     /*
      * Leader only
      */
-    fn send_append_req(peer: NetPeerConfig, cmd: AppendEntriesReq) -> Option<Receiver<AppendEntriesRes>> {
+    fn send_append_req(mut self, peer: NetPeerConfig, cmd: AppendEntriesReq) -> Option<Receiver<AppendEntriesRes>> {
         // if we were able to send the data over the TCP connection, then we will send it
         // back out on the returned Receiver.
-        None
+        let &ref netpeer = self.peer_recv.get(self.conf_dict.get(&peer));
+        match (*netpeer).send(RpcARQ(cmd)) {
+            Some(reschan) => {
+                // TODO
+                None
+            }
+            None => {
+                None
+            }
+        }
     }
     
     fn send_vote_req(peer: NetPeerConfig, cmd: VoteReq) -> Option<Receiver<VoteRes>> {

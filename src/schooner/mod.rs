@@ -10,6 +10,10 @@ extern crate collections;
 extern crate sync;
 extern crate uuid;
 
+extern crate regex;
+#[phase(syntax)] extern crate regex_macros;
+
+
 use std::comm::Select;
 // use std::comm::{Empty, Data, Disconnected};
 use std::{cmp};

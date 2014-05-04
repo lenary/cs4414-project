@@ -62,7 +62,7 @@ impl NetPeer {
      * we can establish a peer connection - the other way is if the peer tries
      * to connect to *us*.
      */
-    fn try_spawn(&mut self) -> bool {
+    pub fn try_spawn(&mut self) -> bool {
         match TcpStream::connect(self.config.address) {
             Ok(stream) => {
                 self.stream = Some(~stream.clone());
@@ -97,7 +97,7 @@ impl NetPeer {
      * an open connection to this peer (this is an invalid state; we should probably
      * crash or handle it somehow).
      */
-    fn add_connection(&mut self, stream: ~TcpStream) -> bool {
+    pub fn add_connection(&mut self, stream: ~TcpStream) -> bool {
         if self.stream.is_some() {
             return false;
         }
@@ -108,7 +108,7 @@ impl NetPeer {
     /*
      * Used by the leader to send commands to followers, and by candidates, etc.
      */
-    fn send(&mut self, cmd: RaftRpc) -> Option<Receiver<RaftRpc>> {
+    pub fn send(&self, cmd: RaftRpc) -> Option<Receiver<RaftRpc>> {
         if self.stream.is_none() {
             return None;
         }
