@@ -27,15 +27,15 @@ pub mod parsers;
  * with them.
  */
 struct NetListener {
-    peer_recv: HashMap<uint, ~NetPeer>,
-    conf_dict: HashMap<~NetPeerConfig, uint>,
+    peer_recv: ~HashMap<uint, ~NetPeer>,
+    conf_dict: ~HashMap<NetPeerConfig, uint>,
 }
 
 impl NetListener {
     fn new() -> NetListener {
         NetListener {
-            peer_recv: HashMap::new(),
-            conf_dict: HashMap::new(),
+            peer_recv: ~HashMap::new(),
+            conf_dict: ~HashMap::new(),
         }
     }
     
@@ -65,7 +65,7 @@ impl NetListener {
             let mut peer_handle = selector.handle(&recv);
             unsafe { peer_handle.add(); }
             self.peer_recv.insert(peer_handle.id(), netpeer);
-            self.conf_dict.insert(~conf.clone(), peer_handle.id());
+            self.conf_dict.insert(conf.clone(), peer_handle.id());
         }
     }
 
@@ -91,8 +91,12 @@ impl NetListener {
      * to. Probably should send even peers that NetListener thinks are down, since 
      * in case they come back up the leader might like to send requests to them.
      */
-    fn get_peer_configs() -> Vec<NetPeerConfig> {
-        Vec::new()
+    fn get_peer_configs(&self) -> Vec<NetPeerConfig> {
+        let mut confs = Vec::new();
+        for conf in self.conf_dict.keys() {
+            confs.push(conf.clone());
+        }
+        confs
     }
 
     /*
