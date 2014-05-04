@@ -22,6 +22,7 @@ pub struct AppendEntriesReq {
 pub struct AppendEntriesRes {
     pub success: bool,
     pub term: u64,
+    pub uuid: Uuid,
 }
 
 impl AppendEntriesReq {
