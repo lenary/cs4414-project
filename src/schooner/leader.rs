@@ -37,7 +37,6 @@ impl Leader for RaftServerState {
         Continue
     }
 
-
     fn leader_append_entries_req(&mut self, req: AppendEntriesReq, chan: Sender<AppendEntriesRes>) -> RaftStateTransition {
         Continue
     }
