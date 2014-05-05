@@ -2,12 +2,24 @@
 #![feature(macro_rules)]
 #![feature(trace_macros, concat_idents)]
 
+// We're Cutting Edge
+#![allow(experimental)]
+
+// This suppresses lots of warnings, which means we ignore less of
+// them. TODO: Remove this line.
+#![allow(dead_code,unused_imports,unused_variable,unused_mut,unnecessary_parens)]
+
 #[phase(syntax, link)]
 extern crate log;
 extern crate rand;
 extern crate serialize;
+extern crate collections;
 extern crate sync;
 extern crate uuid;
+
+extern crate regex;
+#[phase(syntax)] extern crate regex_macros;
+
 
 use std::comm::Select;
 // use std::comm::{Empty, Data, Disconnected};

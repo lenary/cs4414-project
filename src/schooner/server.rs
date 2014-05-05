@@ -391,4 +391,110 @@ impl RaftServerState {
     fn is_leader(&self) -> bool {
         self.current_state == RaftLeader
     }
+
 }
+
+
+// STATE MACHINE
+/* NOTES
+    pass as <~str>
+    LockReq -> LockResp(bool, id)  //using Option<int>
+    UnlockReq(<id>) -> UnlockResp(bool)
+
+loop {
+next_msg = Rec(Msg).recv();
+let mut state = Option<id>;
+match state {
+    None => state = Unlocked;
+    Some<id> => state = Locked(id: ---)
+}
+*/
+
+pub enum State {
+    Locked,
+    Unlocked
+}
+pub struct Locked {
+    locked: bool,
+    state: Option<int>,
+    id: Option<int>
+}
+
+pub struct Unlocked {
+    unlocked: bool,
+    state: Option<int>,
+    id: Option<int>
+}
+
+pub struct LockRes {
+    new_state: Option<State>,
+    status: bool,
+    id: Option<int>
+}
+
+pub struct UnlockRes {
+    new_state: Option<State>,
+    status: bool,
+    id: Option<int>
+}
+
+/*
+impl Unlocked {
+
+    fn lock_request(&mut self) -> LockRes {
+        if self.unlocked {
+            //update with some deterministic but RANDOM NUMBER
+            let result = LockRes { new_state: Some(Locked), status: true, id: Some(1) };         
+            //- send lock msg on a Chan 
+            //- send "true" and <id> on Chan
+        }
+
+        else if !self.unlocked {
+            //already locked do nothing
+        }
+    }
+
+    fn unlock_request(&mut self) -> UnlockRes {
+        if self.unlocked {
+            //already unlocked
+            }
+        // else if !self.locked {
+        //     Continue //already unlocked do nothing
+        // }
+    }
+}
+
+impl Locked {
+
+    fn unlock_request(&mut self) -> UnlockRes {
+        if self.locked {
+            match self.id {
+                //if unlock request (but different lock <id>) continue / do nothing
+                //if unlock request (with same <id>) send unlock msg on Chan + "true" and <id> on Chan
+                None => Unlocked,
+                Some(id) => Locked,
+
+            }
+
+            let result = UnlockRes{new_state: Some(Unlocked), status: true, id: None};
+            result
+        }
+
+        else if !self.locked {
+            //already unlocked do nothing
+        }
+    }
+
+    fn lock_request(&mut self) -> LockRes {
+        if self.locked {
+            //already locked
+        }
+
+        // else if !self.locked {
+        //     Continue //already locked do nothing
+        // }
+    }
+}
+*/
+
+

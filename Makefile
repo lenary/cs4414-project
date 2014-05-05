@@ -1,6 +1,6 @@
 all: server
 
-.PHONY : test clean
+.PHONY : server test clean
 
 clean:
 	rm -f server server_test
