@@ -7,7 +7,7 @@ use super::super::events::{ClientCmdReq, ClientCmdRes};
 static CONNECT_TIMEOUT: u64 = 3000;
 
 /*
- * Start the client listener.
+ * Start the peer listener
  *
  * this_id: id of this server. used for debug messages etc.
  * addr: *client* listen address for this server
