@@ -18,6 +18,16 @@ static TYPE_TOKEN: &'static str = "Content-Type";
 /*
  * Reads a "network" message framed with a content length as an RPC.
  */
+pub fn read_helo<R: Reader>(mut stream: R) -> IoResult<uint> {
+    let mut reader   = ~BufferedReader::new(stream);
+    let id  = try!(parse_server_id(try!(reader.read_line())));
+    reader.unwrap();
+    Ok(id)
+}
+
+/*
+ * Reads a "network" message framed with a content length as an RPC.
+ */
 pub fn read_rpc<R: Reader>(mut stream: R) -> IoResult<RaftRpc> {
     let mut reader   = ~BufferedReader::new(stream);
     let content      = try!(read_str(reader));
@@ -67,7 +77,11 @@ fn make_content_length(s: &str) -> ~str {
  * they need to tell you their id.
  */
 fn make_id_hdr(id: uint) -> ~str{
-    ID_TOKEN + ": " + id.to_str()
+    ID_TOKEN + ": " + id.to_str() + "\n"
+}
+
+pub fn make_id_bytes(id: uint) -> ~[u8]{
+    make_id_hdr(id).as_bytes().to_owned()
 }
 
 /******************/

@@ -57,10 +57,8 @@ macro_rules! try_update (
     ($s: ident, $p: ident, $m: ident) => {
         match $s.$p.try_recv() {
             Ok((incoming_id, incoming_stream)) => {
-                let has_stream: bool = $s.$m.get(&incoming_id).is_some();
-                if !has_stream {
-                    $s.$m.insert(incoming_id, Some(incoming_stream));
-                }
+                let msg_port = $s.$m.get(&incoming_id);
+                msg_port.send((incoming_id, incoming_stream));
             }
             Err(Disconnected) => {
                 fail!("Channel broke.");
@@ -112,11 +110,11 @@ impl NetListener {
         };
         this.shutdown_senders.push(peerlistener_shutdown);
         this.shutdown_senders.push(clientlistener_shutdown);
+        let peer_sender = this.from_peers_send.clone();
         for remote_conf in peer_configs.iter() {
-            let netport = NetPeer::spawn(conf.id, remote_conf, from_peers_send.clone());
-            this.peer_id_map.add(remote_conf.id, netport);
+            let netport = NetPeer::spawn(conf.id, remote_conf, peer_sender.clone());
+            this.peer_id_map.insert(remote_conf.id, netport);
         }
-        this.connect_peers();
         this.main_loop();
         this
     }
@@ -166,8 +164,6 @@ impl NetListener {
     fn main_loop(&mut self) {
         loop {
             may_shutdown!(self, shutdown_signal);
-            try_update!(self, peer_connect_recv, peer_id_map);
-            self.connect_peers();
         }
     }
     
@@ -270,22 +266,20 @@ mod test {
 
     #[test]
     fn test_listen_peers() {
-        let (peer_connect_send, peer_connect_recv) = channel();
-        let (shutdown_send, shutdown_recv) = channel();
         let listen_addr = SocketAddr {
             ip: Ipv4Addr(127, 0, 0, 1),
             port: 9999,
         };
-        let (peer_connect_send, shutdown_recv) = NetListener::listen_peers(1, listen_addr)
+        let (shutdown_send, new_peer_recv) = NetListener::listen_peers(1, listen_addr);
         sleep(1000);
         connect_handshake(14, listen_addr);
-        let (res_id, _) = peer_connect_recv.recv();
+        let (res_id, _) = new_peer_recv.recv();
         assert_eq!(res_id, 14);
         connect_handshake(10, listen_addr);
-        let (res_id, _) = peer_connect_recv.recv();
+        let (res_id, _) = new_peer_recv.recv();
         assert_eq!(res_id, 10);
         connect_handshake(1, listen_addr);
-        let (res_id, _) = peer_connect_recv.recv();
+        let (res_id, _) = new_peer_recv.recv();
         assert_eq!(res_id, 1);
         shutdown_send.send(0);
     }
