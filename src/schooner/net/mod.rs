@@ -5,6 +5,8 @@ pub use self::netmgmt::*;
 // Private stuff, shouldn't be used elsewhere.
 pub mod parsers;
 pub mod netmgmt;
+mod macros;
+mod listeners;
 mod peer;
 mod types;
 

@@ -19,6 +19,7 @@ pub struct NetPeer {
     pub stream: Option<TcpStream>,
     to_raft: Sender<RaftMsg>,
     mgmt_port: Receiver<MgmtMsg>,
+    shutdown: bool,
 }
 
 impl NetPeer {
@@ -47,18 +48,23 @@ impl NetPeer {
             stream: None,
             to_raft: to_raft,
             mgmt_port: mgmt_port,
+            shutdown: false,
         }
     }
 
-    fn try_connect(&mut self) -> Option<TcpStream> {
+    fn try_connect(&mut self) -> bool {
         match TcpStream::connect_timeout(self.conf.address, CONNECT_TIMEOUT) {
             Ok(mut stream) => {
                 stream.write(make_id_bytes(self.id));
                 debug!("[{}] Sent handshake req to {}", self.id, self.conf.address);
-                Some(stream.clone())
+                let success = self.attach_stream(stream.clone());
+                if !success {
+                    drop(stream);
+                }
+                success
             }
             Err(_) => {
-                None
+                false
             }
         }
     }
@@ -66,45 +72,25 @@ impl NetPeer {
     fn peer_loop(&mut self) {
         while(self.stream.is_none()) {
             debug!("[{}] No stream, trying to attach one.", self.id);
-            match self.mgmt_port.try_recv() {
-                Ok(msg) => {
-                    match msg {
-                        AttachStreamMsg(id, mut stream) => {
-                            if id == self.conf.id {
-                                self.attach_stream(stream);
-                            }
-                        }
-                        _ => {
-                            // TODO: send something on failure?
-                        }
-                    }
-                }
-                _ => {
-                }
-            }
-            let connection = self.try_connect();
-            if connection.is_some() {
-                if self.attach_stream(connection.clone().unwrap()) {
-                }
-                else {
-                    debug!("[{}] Dropping connection: already have one", self.id);
-                    drop(connection)
-                }
-            };
+            self.check_mgmt_msg();
+            if self.stream.is_none() { self.try_connect(); }
+            if self.shutdown         { return; }
         }
         let mut stream = self.stream.clone().unwrap();
         let sender = self.to_raft.clone();
         debug!("[{}] Attached stream from {}.", self.id, stream.peer_name());
-        debug!("[{}] Entering peer loop", self.id);
         loop {
             sleep(CONNECT_TIMEOUT);
             let either_rpc = read_rpc(stream.clone());
-            debug!("[{}] Got msg: {}", self.id, either_rpc);
             match either_rpc {
                 Ok(rpc) => {
                     self.send_rpc(rpc, stream.clone());
                 }
                 Err(e) => {
+                    if self.stream.is_some() {
+                        let mut stream = self.stream.take_unwrap();
+                        drop(stream);
+                    }
                     self.stream = None;
                     debug!("[{}] Dropped peer: {}", self.id, e);
                     break;
@@ -113,6 +99,35 @@ impl NetPeer {
         }
         debug!("[{}] Broke from main loop", self.id);
         self.stream = None;
+        self.check_mgmt_msg();
+        if !self.shutdown {
+            self.peer_loop();
+        }
+    }
+
+    fn check_mgmt_msg(&mut self) {
+        match self.mgmt_port.try_recv() {
+            Ok(msg) => {
+                match msg {
+                    AttachStreamMsg(id, mut stream) => {
+                        if id == self.conf.id {
+                            self.attach_stream(stream);
+                        }
+                    }
+                    SendMsg(rpc) => {
+                        if self.stream.is_some() {
+                            self.send_rpc(rpc, self.stream.clone().unwrap());
+                        }
+                    }
+                    StopMsg => {
+                        self.shutdown = true;
+                        self.stream = None;
+                    }
+                }
+            }
+            _ => {
+            }
+        }
     }
 
     /*
@@ -159,37 +174,15 @@ impl NetPeer {
      * address and need to give the stream to us here.
      * 
      * Returns: True if we successfully connected, false if we thought we already had
-     * an open connection to this peer (this is an invalid state; we should probably
-     * crash or handle it somehow).
+     * an open connection to this peer (so this connection gets dropped).
      */
     pub fn attach_stream(&mut self, stream: TcpStream) -> bool {
         if self.stream.is_some() {
+            drop(stream);
             return false;
         }
         self.stream = Some(stream);
         true
-    }
-
-    /*
-     * Used by the leader to send commands to followers, and by candidates, etc.
-     */
-    pub fn send(&mut self, cmd: RaftRpc) -> Option<Receiver<RaftRpc>> {
-        if self.stream.is_none() {
-            return None;
-        }
-        let (to_raft, rpc_recv) = channel();
-        let stream = self.stream.clone().unwrap();
-        spawn(proc() {
-            //stream.write(as_network_msg(cmd));
-            // TODO: replies.
-            /*
-            reply = // wait for a reply on the TCP connection
-            // Probably we should break the channel if the TCPstream dies,
-            // so the leader will know we didn't get a reply.
-            to_raft.send(reply);
-            */
-         });
-        Some(rpc_recv)
     }
 }
 
