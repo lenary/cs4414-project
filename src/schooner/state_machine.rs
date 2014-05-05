@@ -10,17 +10,7 @@ use super::leader::Leader;       // A trait with impl for RaftServerState
 use std::comm::*;
 use std::io::timer::Timer;
 use std::vec::Vec;
-
-//Not sure yet if needed
-mod events;
-mod consistent_log;
-mod net;
-
-mod server;
-mod leader;
-mod candidate;
-mod follower;
-
+use rand::{task_rng,Rng};
 
 // Some ideas of how to use with Application Tasks:
 //
@@ -80,24 +70,31 @@ pub struct UnlockRes {
     id: Option<int>
 }
 
-/*
 impl Unlocked {
 
-    fn lock_request(&mut self) -> LockRes {
-        if self.unlocked {
+    fn lock_request(object: &mut Unlocked) -> LockRes {
+        if object.unlocked {
+            
             //update with some deterministic but RANDOM NUMBER
-            let result = LockRes { new_state: Some(Locked), status: true, id: Some(1) };         
+            let mut rand_num = task_rng().gen::<int>();
+            // if rand_num.gen() {
+            // 	println!("int: {}, uint: {}", rng.gen::<int>(), rng.gen::<uint>())
+            // }
+
+            let result = LockRes { new_state: Some(Locked), status: true, id: Some(rand_num) };         
+            result
             //- send lock msg on a Chan 
+            //endp_send.send(result);
             //- send "true" and <id> on Chan
         }
 
-        else if !self.unlocked {
+        else if !object.unlocked {
             //already locked do nothing
         }
     }
 
-    fn unlock_request(&mut self) -> UnlockRes {
-        if self.unlocked {
+    fn unlock_request(object: &mut Unlocked) -> UnlockRes {
+        if object.unlocked {
             //already unlocked
             }
         // else if !self.locked {
@@ -108,33 +105,36 @@ impl Unlocked {
 
 impl Locked {
 
-    fn unlock_request(&mut self) -> UnlockRes {
-        if self.locked {
-            match self.id {
-                //if unlock request (but different lock <id>) continue / do nothing
-                //if unlock request (with same <id>) send unlock msg on Chan + "true" and <id> on Chan
-                None => Unlocked,
-                Some(id) => Locked,
-
+    fn unlock_request(object: &mut Locked, request_id: Option<int>) -> UnlockRes {
+        if object.locked {
+            match request_id {
+            	Some(id) => { let result = UnlockRes {
+            							new_state: Some(Unlocked), 
+            							status: true, 
+            							id: None};
+            							result 
+            						},
+            	
+            	None => {}//do nothing
+			
+                //id sent by request does not match, continue/do nothing
+				//if unlock request (with same <id>) send unlock msg on Chan + "true" and <id> on Chan
             }
-
-            let result = UnlockRes{new_state: Some(Unlocked), status: true, id: None};
-            result
         }
 
-        else if !self.locked {
-            //already unlocked do nothing
+        else if !object.locked {
+            //already unlocked, do nothing
         }
     }
 
-    fn lock_request(&mut self) -> LockRes {
-        if self.locked {
+    fn lock_request(object: &mut Locked) -> LockRes {
+        if object.locked {
             //already locked
         }
 
         // else if !self.locked {
         //     Continue //already locked do nothing
         // }
-    }
+	}
 }
-*/
+
