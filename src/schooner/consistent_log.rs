@@ -225,7 +225,7 @@ fn read_last_entry(path: &Path) -> IoResult<~str> {
 mod test {
     use std::io::fs;
     use std::io::{BufferedReader,File};
-    
+
     use serialize::{json, Decodable};
     use uuid::{Uuid, UuidVersion, Version4Random};
 

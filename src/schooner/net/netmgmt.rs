@@ -76,7 +76,7 @@ impl NetManager {
         let select = Select::new();
         let h_shutdown = select.handle(&self.shutdown_signal);
     }
-    
+
 }
 
 #[cfg(test)]

@@ -1,3 +1,4 @@
+#[deriving(Clone)]
 use super::events::*;
 pub use self::types::*;
 pub use self::netmgmt::*;
@@ -17,7 +18,7 @@ pub struct Peers {
 }
 
 impl Peers {
-    /* 
+    /*
      * Spawn the peer controller submodule.
      *
      * Arguments:
@@ -36,6 +37,7 @@ impl Peers {
         this
     }
 
+    #[deriving(Clone)]
     pub fn msg_all_peers(&mut self, msg: RaftRpc) {
         for id in self.get_peer_ids().iter() {
             self.msg_peer(*id, msg.clone());

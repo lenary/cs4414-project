@@ -1,9 +1,11 @@
 #![feature(globs)]
 use super::events::*;
-
+use super::net::*;
 use super::server::RaftServerState;
 use super::server::{RaftStateTransition, NextState, Continue};
 use super::server::{RaftNextState, RaftCandidate, RaftFollower};
+use std::vec::Vec;
+use uuid::{Uuid, UuidVersion, Version4Random};
 
 // Rust doesn't support arbitrary methods being defined in another
 // file... except with traits.
@@ -37,14 +39,23 @@ impl Leader for RaftServerState {
     }
 
     fn leader_heartbeat(&mut self) -> RaftStateTransition {
-        //make an empty append entry request using self.leader_append_entries_req()
+        let aer = AppendEntriesReq{
+                                term: self.log.term, //TODO get more accurate info from election?
+                                prev_log_idx: self.log.idx,
+                                prev_log_term: self.log.term,
+                                commit_idx: self.log.idx,
+                                leader_id: self.id,
+                                uuid: Uuid::new(Version4Random).unwrap(),
+                                entries: Vec::new()};
+
+        Peers.msg_all_peers(0);
+
         Continue
     }
 
     fn leader_append_entries_req(&mut self, req: AppendEntriesReq, chan: Sender<AppendEntriesRes>) -> RaftStateTransition {
         //TODO
         //add entry to local log
-
         //add entry to consistent log
         //send req to followers
 

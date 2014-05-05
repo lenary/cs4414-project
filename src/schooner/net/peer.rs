@@ -40,7 +40,7 @@ impl NetPeer {
         mgmt_send
     }
 
-    
+
     fn new(id: uint, config: NetPeerConfig, to_raft: Sender<RaftMsg>, mgmt_port: Receiver<MgmtMsg>) -> NetPeer {
         NetPeer {
             id: id,
@@ -195,7 +195,7 @@ mod test {
     use std::io::net::ip::{SocketAddr, Ipv4Addr};
     use std::io::{Acceptor, Listener, TcpListener, TcpStream};
     use std::io::net::tcp::TcpAcceptor;
-    
+
     use super::super::super::events::*;
     use uuid::{Uuid, UuidVersion, Version4Random};
     use super::NetPeer;
