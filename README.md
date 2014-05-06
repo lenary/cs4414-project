@@ -22,6 +22,14 @@ Almost all the project documentation is in the
 including a Glossary of terms, a condensed Raft guide, and an overview
 of the design of Schooner.
 
+### Building this Repo
+
+You will need to install bleeding-edge Rust: we've been using
+mozilla/rust#35f3f7a
+
+Then, from this directory run `make`. `make test` will build and run
+the tests (of which there are a few, but not many).
+
 ### Background
 
 Other links about the Raft Algorithm:
