@@ -18,7 +18,7 @@ static TYPE_TOKEN: &'static str = "Content-Type";
 /*
  * Reads a "network" message framed with a content length as an RPC.
  */
-pub fn read_helo<R: Reader>(mut stream: R) -> IoResult<uint> {
+pub fn read_helo<R: Reader>(mut stream: R) -> IoResult<u64> {
     let mut reader   = ~BufferedReader::new(stream);
     let id  = try!(parse_server_id(try!(reader.read_line())));
     reader.unwrap();
@@ -76,11 +76,11 @@ fn make_content_length(s: &str) -> ~str {
  * Used for first communication with a peer, when
  * they need to tell you their id.
  */
-fn make_id_hdr(id: uint) -> ~str{
+fn make_id_hdr(id: u64) -> ~str{
     ID_TOKEN + ": " + id.to_str() + "\n"
 }
 
-pub fn make_id_bytes(id: uint) -> ~[u8]{
+pub fn make_id_bytes(id: u64) -> ~[u8]{
     make_id_hdr(id).as_bytes().to_owned()
 }
 
@@ -96,7 +96,7 @@ fn parse_content_length(len_hdr: &str) -> IoResult<uint> {
 }
 
 
-fn parse_server_id(id_hdr: &str) -> IoResult<uint> {
+fn parse_server_id(id_hdr: &str) -> IoResult<u64> {
     to_result(regex!(r"Server-Id: (\d+)")
         .captures(id_hdr)
         .map(|c| c.at(1))
@@ -226,6 +226,7 @@ mod test {
     #[test]
     fn test_read_rpc_ars() {
         test_read_rpc(RpcARS(AppendEntriesRes {
+            id: 1,
             success: true,
             term: 12,
             uuid: Uuid::new(Version4Random).unwrap(),

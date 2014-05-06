@@ -1,6 +1,6 @@
+use uuid::{Uuid, UuidVersion, Version4Random};
 
 use super::events::*;
-
 use super::server::RaftServerState;
 use super::server::{RaftStateTransition, NextState, Continue};
 use super::server::{RaftNextState, RaftLeader, RaftCandidate};
@@ -36,7 +36,28 @@ impl Follower for RaftServerState {
 
 
     fn follower_append_entries_req(&mut self, req: AppendEntriesReq, chan: Sender<AppendEntriesRes>) -> RaftStateTransition {
-        // redirect client to leader
+        if req.commit_idx > self.last_applied {
+            self.last_applied += 1;
+            // TODO:
+            // self.to_app_sm.send(log(lastApplied))
+        }
+        if req.term > self.current_term {
+            // TODO: maybe state transition to follower (do setup/teardown again)?
+            // Raft paper:
+            //     If RPC request or response contains term T > currentTerm:
+            //     set currentTerm = T, convert to follower
+        }
+        else if req.term < self.current_term {
+            chan.send(AppendEntriesRes {
+                id: self.id,
+                success: false,
+                term: self.current_term,
+                uuid: Uuid::new(Version4Random).unwrap(),
+            });
+        }
+        // TODO: (pseudo-haskell for being concise ...)
+        // if len $ filter (self.log[previousLogIdx].term ==) (map (.term) req.entries) then reply false
+        
         Continue
     }
 

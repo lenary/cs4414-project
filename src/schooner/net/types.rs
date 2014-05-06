@@ -17,14 +17,14 @@ pub enum RaftRpc {
 
 pub enum MgmtMsg {
     // Peer ID and a TcpStream to attach to
-    AttachStreamMsg(uint, TcpStream),
+    AttachStreamMsg(u64, TcpStream),
     SendMsg(RaftRpc),
     StopMsg,
 }
 
 #[deriving(Clone, Hash, Eq, TotalEq, Show)]
 pub struct NetPeerConfig {
-    pub id: uint,
+    pub id: u64,
     // Peer's Raft listening address, but not necessarily the port we will
     // get our request from. Hence the peer should send its id when it
     // makes its first connection to us.

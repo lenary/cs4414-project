@@ -1,4 +1,6 @@
 #![allow(dead_code)]
+#![feature(globs)]
+#![feature(macro_rules)]
 
 use super::events::*;
 use super::events::append_entries::{AppendEntriesReq, AppendEntriesRes};
@@ -6,10 +8,15 @@ use super::events::{VoteReq, VoteRes};
 use super::follower::Follower;   // A trait with impl for RaftServerState
 use super::candidate::Candidate; // A trait with impl for RaftServerState
 use super::leader::Leader;       // A trait with impl for RaftServerState
+use super::consistent_log::Log;
+use super::net::NetPeerConfig;
 
+use std::io::net::ip::{SocketAddr, Ipv4Addr};
 use std::comm::*;
 use std::io::timer::Timer;
 use std::vec::Vec;
+use uuid::{Uuid, UuidVersion, Version4Random};
+use net::Peers;
 
 // Some kind of Idea for how the whole thing works:
 //
@@ -24,7 +31,7 @@ use std::vec::Vec;
 //
 // 2. the Application State Machine task - This is the
 //    strongly-consistent replicated state machine that is custom
-//    per-application. It recieves messages as they are committed to
+//    per-application. It receives messages as they are committed to
 //    the log.
 //
 // 3. the Application Endpoint tasks- This is the set of tasks that
@@ -76,6 +83,27 @@ pub struct RaftServer {
     peer_configs: Vec<()>,
 }
 
+// static duplex to Application State Machine (from somewhere else)
+// static receiver from Application Endpoint  (
+// static receiver from Peer
+
+// Some ideas of how to use with Application Tasks:
+//
+// let (to_app_send, to_app_rec) = channel();
+// let (from_app_send, from_app_rec) = channel();
+//
+// spawn_app_task(to_app_rec, from_app_send);
+//
+// let (from_endpoint_send, from_endpoint_rec) = channel();
+//
+// spawn_main_app_endpoint_task(from_endpoint_send);
+//
+// rs = RaftServer::new(...opts...); // TODO
+// rs.add_peer(...peercfg...); // TODO
+// RaftServer::spawn(rs, to_app_send, from_app_rec, from_endpoint_rec);
+//
+
+
 impl RaftServer {
     pub fn new() -> RaftServer {
         let election_timeout = 150;
@@ -92,18 +120,25 @@ impl RaftServer {
         false
     }
 
-    // TODO: Spawn Peers
-    pub fn spawn_peer_tasks(&mut self, sender: Sender<RaftMsg>) -> Vec<()> {
-        Vec::new()
-    }
-
     pub fn spawn(&mut self,
                 to_app_sm:         Sender<(ClientCmdReq, Sender<ClientCmdRes>)>,
                 from_app_endpoint: Receiver<(ClientCmdReq, Sender<ClientCmdRes>)>) {
 
         let (from_peers_send, from_peers_rec) = channel();
-        let peers = self.spawn_peer_tasks(from_peers_send);
-
+        let (from_client_send, from_client_rec) = channel();
+        let conf: NetPeerConfig = NetPeerConfig {
+            id: 1,
+            address: SocketAddr {
+                ip: Ipv4Addr(127, 0, 0, 1),
+                port: 6666,
+            },
+            client_addr: SocketAddr {
+                ip: Ipv4Addr(127, 0, 0, 1),
+                port: 6667,
+            },
+        };
+        let peer_configs: Vec<NetPeerConfig> = Vec::new();
+        let peers = Peers::new(conf, ~peer_configs, from_peers_send, from_client_send);
         let heartbeat_interval = self.heartbeat_interval;
 
         spawn(proc() {
@@ -133,8 +168,17 @@ pub struct RaftServerState {
     // Channel to message the Application State Machine with
     to_app_sm:     Sender<(ClientCmdReq, Sender<ClientCmdRes>)>,
 
-    // Peer Configurations
-    peers:         Vec<()>,
+    pub peers:     Peers,
+    pub log:       Log,
+    pub id:        u64,
+    pub peers_to_confirm: Vec<u64>,
+    pub peers_have_confirmed: Vec<u64>,
+    // Raft paper: "persistent state on all servers"
+    pub current_term: u64,
+    pub voted_for: u64,
+    // Raft paper: "Volatile state on all servers"
+    pub commit_index: u64,
+    pub last_applied: u64,
 }
 
 // These are the possible Roles a Raft Peer could be in: Leader,
@@ -206,16 +250,27 @@ macro_rules! state_proxy(
 impl RaftServerState {
     fn new(current_state: RaftNextState,
            to_app_sm: Sender<(ClientCmdReq, Sender<ClientCmdRes>)>,
-           peers: Vec<()>) -> RaftServerState {
+           peers: Peers) -> RaftServerState {
+        let id : u64 = 0u64; //TODO maintain an id map
         RaftServerState {
+            id: id, //TODO maintain an id map
             current_state: current_state,
             is_setup: false,
             to_app_sm: to_app_sm,
             peers: peers,
+            peers_to_confirm: Vec::new(),
+            peers_have_confirmed: Vec::new(),
+            // Raft paper: "persistent state on all servers"
+            current_term: 0,
+            voted_for: 0,
+            log: *Log::new(Path::new(&"datalog/log.test")).unwrap(), //how to properly index the log files?
+            // Raft paper: "Volatile state on all servers"
+            commit_index: 0,
+            last_applied: 0,
         }
     }
 
-    fn new_state(&mut self, new_state: RaftNextState) {
+    pub fn new_state(&mut self, new_state: RaftNextState) {
         self.current_state = new_state;
         self.is_setup = false;
     }
@@ -392,16 +447,24 @@ impl RaftServerState {
 
 
     // Called upon receiving a request from a client
-    fn handle_application_req(&mut self,
-                              req: ClientCmdReq,
-                              chan: Sender<ClientCmdRes>) -> RaftStateTransition {
-        Continue
-        // if self.is_leader() {
-        //     pass to application state machine
-        // }
+    fn handle_application_req(&mut self, req: ClientCmdReq, chan: Sender<ClientCmdRes>) -> RaftStateTransition {
+         if self.is_leader() {
+            let aer = AppendEntriesReq{
+                                term: self.log.term,
+                                prev_log_idx: self.log.idx,
+                                prev_log_term: self.log.term,
+                                commit_idx: self.log.idx,
+                                leader_id: self.id,
+                                uuid: Uuid::new(Version4Random).unwrap(),
+                                entries: Vec::new()}; //TODO take entry info out of ClientCmdReq after it is fleshed out
+            if (self.log.append_entries(&aer).is_ok()) {
+                //TODO respond to client after entry applied to state machine
+            }
         // else {
         //     reply with info on how to talk to the leader
         // }
+        }
+        Continue
     }
 
     //
@@ -413,108 +476,5 @@ impl RaftServerState {
     }
 
 }
-
-
-// STATE MACHINE
-/* NOTES
-    pass as <~str>
-    LockReq -> LockResp(bool, id)  //using Option<int>
-    UnlockReq(<id>) -> UnlockResp(bool)
-
-loop {
-next_msg = Rec(Msg).recv();
-let mut state = Option<id>;
-match state {
-    None => state = Unlocked;
-    Some<id> => state = Locked(id: ---)
-}
-*/
-
-pub enum State {
-    Locked,
-    Unlocked
-}
-pub struct Locked {
-    locked: bool,
-    state: Option<int>,
-    id: Option<int>
-}
-
-pub struct Unlocked {
-    unlocked: bool,
-    state: Option<int>,
-    id: Option<int>
-}
-
-pub struct LockRes {
-    new_state: Option<State>,
-    status: bool,
-    id: Option<int>
-}
-
-pub struct UnlockRes {
-    new_state: Option<State>,
-    status: bool,
-    id: Option<int>
-}
-
-/*
-impl Unlocked {
-
-    fn lock_request(&mut self) -> LockRes {
-        if self.unlocked {
-            //update with some deterministic but RANDOM NUMBER
-            let result = LockRes { new_state: Some(Locked), status: true, id: Some(1) };         
-            //- send lock msg on a Chan 
-            //- send "true" and <id> on Chan
-        }
-
-        else if !self.unlocked {
-            //already locked do nothing
-        }
-    }
-
-    fn unlock_request(&mut self) -> UnlockRes {
-        if self.unlocked {
-            //already unlocked
-            }
-        // else if !self.locked {
-        //     Continue //already unlocked do nothing
-        // }
-    }
-}
-
-impl Locked {
-
-    fn unlock_request(&mut self) -> UnlockRes {
-        if self.locked {
-            match self.id {
-                //if unlock request (but different lock <id>) continue / do nothing
-                //if unlock request (with same <id>) send unlock msg on Chan + "true" and <id> on Chan
-                None => Unlocked,
-                Some(id) => Locked,
-
-            }
-
-            let result = UnlockRes{new_state: Some(Unlocked), status: true, id: None};
-            result
-        }
-
-        else if !self.locked {
-            //already unlocked do nothing
-        }
-    }
-
-    fn lock_request(&mut self) -> LockRes {
-        if self.locked {
-            //already locked
-        }
-
-        // else if !self.locked {
-        //     Continue //already locked do nothing
-        // }
-    }
-}
-*/
 
 

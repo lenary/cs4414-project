@@ -42,6 +42,7 @@ mod consistent_log;
 mod net;
 
 mod server;
+mod state_machine;
 mod leader;
 mod candidate;
 mod follower;
