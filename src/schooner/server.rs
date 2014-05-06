@@ -1,4 +1,6 @@
 #![allow(dead_code)]
+#![feature(globs)]
+#![feature(macro_rules)]
 
 use super::events::*;
 use super::events::append_entries::{AppendEntriesReq, AppendEntriesRes};
@@ -6,10 +8,14 @@ use super::events::{VoteReq, VoteRes};
 use super::follower::Follower;   // A trait with impl for RaftServerState
 use super::candidate::Candidate; // A trait with impl for RaftServerState
 use super::leader::Leader;       // A trait with impl for RaftServerState
+use super::consistent_log::Log;
+use super::net::NetPeerConfig;
 
+use std::io::net::ip::{SocketAddr, Ipv4Addr};
 use std::comm::*;
 use std::io::timer::Timer;
 use std::vec::Vec;
+use net::Peers;
 
 // Some kind of Idea for how the whole thing works:
 //
@@ -24,7 +30,7 @@ use std::vec::Vec;
 //
 // 2. the Application State Machine task - This is the
 //    strongly-consistent replicated state machine that is custom
-//    per-application. It recieves messages as they are committed to
+//    per-application. It receives messages as they are committed to
 //    the log.
 //
 // 3. the Application Endpoint tasks- This is the set of tasks that
@@ -77,8 +83,8 @@ pub struct RaftServer {
 }
 
 // static duplex to Application State Machine (from somewhere else)
-// static reciever from Application Endpoint  (
-// static reciever from Peer
+// static receiver from Application Endpoint  (
+// static receiver from Peer
 
 // Some ideas of how to use with Application Tasks:
 //
@@ -113,18 +119,25 @@ impl RaftServer {
         false
     }
 
-    // TODO: Spawn Peers
-    pub fn spawn_peer_tasks(&mut self, sender: Sender<RaftMsg>) -> Vec<()> {
-        Vec::new()
-    }
-
     pub fn spawn(&mut self,
                 to_app_sm:         Sender<(ClientCmdReq, Sender<ClientCmdRes>)>,
                 from_app_endpoint: Receiver<(ClientCmdReq, Sender<ClientCmdRes>)>) {
 
         let (from_peers_send, from_peers_rec) = channel();
-        let peers = self.spawn_peer_tasks(from_peers_send);
-
+        let (from_client_send, from_client_rec) = channel();
+        let conf: NetPeerConfig = NetPeerConfig {
+            id: 1,
+            address: SocketAddr {
+                ip: Ipv4Addr(127, 0, 0, 1),
+                port: 6666,
+            },
+            client_addr: SocketAddr {
+                ip: Ipv4Addr(127, 0, 0, 1),
+                port: 6667,
+            },
+        };
+        let peer_configs: Vec<NetPeerConfig> = Vec::new();
+        let peers = Peers::new(conf, ~peer_configs, from_peers_send, from_client_send);
         let heartbeat_interval = self.heartbeat_interval;
 
         spawn(proc() {
@@ -151,7 +164,9 @@ pub struct RaftServerState {
 
     to_app_sm:     Sender<(ClientCmdReq, Sender<ClientCmdRes>)>,
 
-    peers:         Vec<()>,
+    pub peers:     Peers,
+    pub log:       Log,
+    pub id:        u64
 }
 
 #[deriving(Eq,Clone,Show)]
@@ -212,16 +227,18 @@ macro_rules! state_proxy(
 impl RaftServerState {
     fn new(current_state: RaftNextState,
            to_app_sm: Sender<(ClientCmdReq, Sender<ClientCmdRes>)>,
-           peers: Vec<()>) -> RaftServerState {
+           peers: Peers) -> RaftServerState {
         RaftServerState {
             current_state: current_state,
             is_setup: false,
             to_app_sm: to_app_sm,
             peers: peers,
+            log: *Log::new(Path::new(&"datalog/log.test")).unwrap(), //how to properly index the log files?
+            id: 0u64 //TODO maintain an id map
         }
     }
 
-    fn new_state(&mut self, new_state: RaftNextState) {
+    pub fn new_state(&mut self, new_state: RaftNextState) {
         self.current_state = new_state;
         self.is_setup = false;
     }
@@ -340,7 +357,7 @@ impl RaftServerState {
     }
 
     fn handle_append_entries_req(&mut self, req: AppendEntriesReq, chan: Sender<AppendEntriesRes>) -> RaftStateTransition {
-        state_proxy!(leader_append_entries_req, 
+        state_proxy!(leader_append_entries_req,
                      candidate_append_entries_req,
                      follower_append_entries_req,
                      req, chan)
@@ -371,13 +388,14 @@ impl RaftServerState {
     // In these, it's probably just easier to call the functions
     // in the Leader trait directly.
     fn handle_application_req(&mut self, req: ClientCmdReq, chan: Sender<ClientCmdRes>) -> RaftStateTransition {
-        Continue
-        // if self.is_leader() {
-        //     pass to application state machine
-        // }
+         if self.is_leader() {
+            if (self.log.append_entries(&req).is_ok()) {
+                //TODO respond to client after entry applied to state machine
+            }
         // else {
         //     reply with info on how to talk to the leader
         // }
+        Continue
     }
 
     //
@@ -440,8 +458,8 @@ impl Unlocked {
     fn lock_request(&mut self) -> LockRes {
         if self.unlocked {
             //update with some deterministic but RANDOM NUMBER
-            let result = LockRes { new_state: Some(Locked), status: true, id: Some(1) };         
-            //- send lock msg on a Chan 
+            let result = LockRes { new_state: Some(Locked), status: true, id: Some(1) };
+            //- send lock msg on a Chan
             //- send "true" and <id> on Chan
         }
 

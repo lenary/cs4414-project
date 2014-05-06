@@ -98,7 +98,7 @@ mod test{
     use super::super::parsers::*;
     use super::{listen_peers};
 
-    
+
     fn connect_handshake(id: uint, addr: SocketAddr) {
         match TcpStream::connect(addr) {
             Ok(mut stream) => {

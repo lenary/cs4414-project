@@ -18,7 +18,7 @@ pub struct Peers {
 }
 
 impl Peers {
-    /* 
+    /*
      * Spawn the peer controller submodule.
      *
      * Arguments:

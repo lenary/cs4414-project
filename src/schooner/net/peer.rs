@@ -40,7 +40,7 @@ impl NetPeer {
         mgmt_send
     }
 
-    
+
     fn new(id: uint, config: NetPeerConfig, to_raft: Sender<RaftMsg>, mgmt_port: Receiver<MgmtMsg>) -> NetPeer {
         NetPeer {
             id: id,
@@ -200,7 +200,7 @@ impl NetPeer {
     /*
      * If the node chose to connect to us, then we got a connection on our listening
      * address and need to give the stream to us here.
-     * 
+     *
      * Returns: True if we successfully connected, false if we thought we already had
      * an open connection to this peer (so this connection gets dropped).
      */
@@ -224,7 +224,7 @@ mod test {
     use std::io::net::ip::{SocketAddr, Ipv4Addr};
     use std::io::{Acceptor, Listener, TcpListener, TcpStream};
     use std::io::net::tcp::TcpAcceptor;
-    
+
     use super::super::super::events::*;
     use uuid::{Uuid, UuidVersion, Version4Random};
     use super::NetPeer;
