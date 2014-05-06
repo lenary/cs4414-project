@@ -96,7 +96,10 @@ impl LockState {
     loop {
       let (cmd, sender) = recv.recv();
       
-      //call self.lock() and self.unlock(uint) here
+      //self.lock();
+      
+
+      //self.unlock(uint);
       
     }
   }

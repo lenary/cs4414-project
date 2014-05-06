@@ -54,12 +54,14 @@ fn main() {
                                  Receiver<(ClientCmdReq, Sender<ClientCmdRes>)>) = channel();
     let (sm_send, sm_recv): (Sender<(ClientCmdReq, Sender<ClientCmdRes>)>,
                              Receiver<(ClientCmdReq, Sender<ClientCmdRes>)>) = channel();
-    spawn(proc() {
-        // Stupid dummy state machine
-        loop {
-            sm_recv.recv();
-        }
-    });
+
+    LockServer::spawn(sm_recv);
+    // spawn(proc() {
+    //     // Stupid dummy state machine
+    //     loop {
+    //         sm_recv.recv();
+    //     }
+    // });
     let mut server = RaftServer::new();
     server.spawn(sm_send, endp_recv);
 }
