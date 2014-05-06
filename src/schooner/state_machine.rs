@@ -86,13 +86,13 @@ impl LockState {
   }
   
   fn new() -> LockState {
-    LockState { 
+    return LockState { 
       locked: false,
       counter: 0
     }
   }
   
-  fn loop(&mut self, recv: Receiver<(ClientCmdReq, Sender<ClientCmdRes>)) {
+  fn loop(&mut self, recv: Receiver<(ClientCmdReq, Sender<ClientCmdRes>)>) {
     loop {
       let (cmd, sender) = recv.recv();
       
