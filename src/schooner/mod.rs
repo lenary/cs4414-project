@@ -36,6 +36,7 @@ use self::net::*;
 use events::{ClientCmdReq, ClientCmdRes};
 use self::events::append_entries::{AppendEntriesReq,AppendEntriesRes};
 use self::server::RaftServer;
+use self::state_machine::LockState;
 
 mod events;
 mod consistent_log;
@@ -52,12 +53,13 @@ fn main() {
                                  Receiver<(ClientCmdReq, Sender<ClientCmdRes>)>) = channel();
     let (sm_send, sm_recv): (Sender<(ClientCmdReq, Sender<ClientCmdRes>)>,
                              Receiver<(ClientCmdReq, Sender<ClientCmdRes>)>) = channel();
-    spawn(proc() {
-        // TODO: Example State Machine
-        loop {
-            sm_recv.recv();
-        }
-    });
+    LockState::spawn(sm_recv);
+    // spawn(proc() {
+    //     // Stupid dummy state machine
+    //     loop {
+    //         sm_recv.recv();
+    //     }
+    // });
     let mut server = RaftServer::new();
     server.spawn(sm_send, endp_recv);
 }
