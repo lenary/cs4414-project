@@ -40,7 +40,8 @@ impl Leader for RaftServerState {
 
     fn leader_heartbeat(&mut self) -> RaftStateTransition {
         let aer = AppendEntriesReq{
-                                term: self.log.term, //TODO get more accurate info from election?
+                                term: self.log.term,
+                                //TODO get more accurate term info from election or system var
                                 prev_log_idx: self.log.idx,
                                 prev_log_term: self.log.term,
                                 commit_idx: self.log.idx,
@@ -86,7 +87,6 @@ impl Leader for RaftServerState {
             self.peers_have_confirmed.push(res.id);
             if (self.peers_have_confirmed.len() >= self.peers_to_confirm.len()) {
                 //conform reached
-                //TODO
                 //pass the log into application state machine
                 //pass the log to client using RaftAppMsg<AppMsg>
             }
