@@ -1,6 +1,7 @@
 #![feature(globs)]
 use super::events::*;
 use super::net::*;
+use super::net::RaftRpc;
 use super::server::RaftServerState;
 use super::server::{RaftStateTransition, NextState, Continue};
 use super::server::{RaftNextState, RaftCandidate, RaftFollower};
@@ -26,7 +27,6 @@ pub trait Leader {
     fn leader_vote_res(&mut self, res: VoteRes) -> RaftStateTransition;
 }
 
-// TODO: Real Implementations
 impl Leader for RaftServerState {
     fn leader_setup(&mut self) -> RaftStateTransition {
         //send initial heartbeat to all followers
@@ -48,23 +48,26 @@ impl Leader for RaftServerState {
                                 uuid: Uuid::new(Version4Random).unwrap(),
                                 entries: Vec::new()};
 
-        Peers.msg_all_peers(0);
+        self.peers.msg_all_peers(RpcARQ(aer));
 
         Continue
     }
 
     fn leader_append_entries_req(&mut self, req: AppendEntriesReq, chan: Sender<AppendEntriesRes>) -> RaftStateTransition {
-        //TODO
+
         //add entry to local log
-        //add entry to consistent log
-        //send req to followers
+        if (self.log.append_entries(&req).is_ok()) {
+            //send entry to followers
+            self.peers.msg_all_peers(RpcARQ(req));
+        }
 
         Continue
     }
 
     fn leader_append_entries_res(&mut self, res: AppendEntriesRes) -> RaftStateTransition {
-        //TODO
+
         //listen for a conform (majority of peers) of the log
+
         //pass the log into application state machine
         //pass the log to client using RaftAppMsg<AppMsg>
         Continue
