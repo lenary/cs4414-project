@@ -224,194 +224,192 @@ macro_rules! state_proxy(
     };
 )
 
-impl RaftServerState {
-    fn new(current_state: RaftNextState,
-           to_app_sm: Sender<(ClientCmdReq, Sender<ClientCmdRes>)>,
-           peers: Peers) -> RaftServerState {
-        RaftServerState {
-            id: 0u64 //TODO maintain an id map
-            current_state: current_state,
-            is_setup: false,
-            to_app_sm: to_app_sm,
-            peers: peers,
-            // Raft paper: "persistent state on all servers"
-            current_term: uint,
-            voted_for: uint,
-            log: *Log::new(Path::new(&"datalog/log.test")).unwrap(), //how to properly index the log files?
-            // Raft paper: "Volatile state on all servers"
-            commit_index: uint,
-            last_applied: uint,
-        }
-    }
-
-    pub fn new_state(&mut self, new_state: RaftNextState) {
-        self.current_state = new_state;
-        self.is_setup = false;
-    }
-
-    fn main_loop(&mut self,
-                 timer_rec: &Receiver<()>,
-                 peer_rec:  &Receiver<RaftMsg>,
-                 endpoint_rec: &Receiver<(ClientCmdReq, Sender<ClientCmdRes>)>) {
-
-        // Use every time an invocation may transition the state machine
-        // Macro Guide: http://static.rust-lang.org/doc/master/guide-macros.html
-        macro_rules! may_transition (
-            ($e:expr) => (
-                match $e {
-                    NextState(new_state) => {
-                        debug!("Trans {:?} ==> {:?}", self.current_state, new_state);
-
-                        self.handle_teardown();
-
-                        self.new_state(new_state);
-
-                        continue;
-                    },
-                    Stop => {
-                        debug!("Stop {:?} ==> ()", self.current_state);
-
-                        self.handle_teardown();
-
-                        break;
-                    },
-                    Continue => {}
-                }
-            )
-        );
-
-        let select   = Select::new();
-        let mut timer_handle    = select.handle(timer_rec);
-        let mut peer_handle     = select.handle(peer_rec);
-        let mut endpoint_handle = select.handle(endpoint_rec);
-
-        unsafe {
-            timer_handle.add();
-            peer_handle.add();
-            endpoint_handle.add();
-        }
-
-        loop {
-            may_transition!(self.handle_setup());
-
-            let ready_id = select.wait();
-            if timer_handle.id() == ready_id {
-                timer_handle.recv();
-                may_transition!(self.handle_heartbeat());
+    impl RaftServerState {
+        fn new(current_state: RaftNextState,
+               to_app_sm: Sender<(ClientCmdReq, Sender<ClientCmdRes>)>,
+               peers: Peers) -> RaftServerState {
+            RaftServerState {
+                id: 0u64, //TODO maintain an id map
+                current_state: current_state,
+                is_setup: false,
+                to_app_sm: to_app_sm,
+                peers: peers,
+                // Raft paper: "persistent state on all servers"
+                current_term: uint,
+                voted_for: uint,
+                log: *Log::new(Path::new(&"datalog/log.test")).unwrap(), //how to properly index the log files?
+                // Raft paper: "Volatile state on all servers"
+                commit_index: uint,
+                last_applied: uint,
             }
-            else if peer_handle.id() == ready_id {
-                // An Event Message from a Peer
-                let event: RaftMsg = peer_handle.recv();
-                match event {
-                    ARQ(ae_req, ae_chan) =>
-                        may_transition!(self.handle_append_entries_req(ae_req, ae_chan)),
-                    ARS(ae_res) =>
-                        may_transition!(self.handle_append_entries_res(ae_res)),
-                    VRQ(vote_req, vote_chan) =>
-                        may_transition!(self.handle_vote_req(vote_req, vote_chan)),
-                    VRS(vote_res) =>
-                        may_transition!(self.handle_vote_res(vote_res)),
-                    StopReq => {
-                        may_transition!(Stop);
+        }
+
+        pub fn new_state(&mut self, new_state: RaftNextState) {
+            self.current_state = new_state;
+            self.is_setup = false;
+        }
+
+        fn main_loop(&mut self,
+                     timer_rec: &Receiver<()>,
+                     peer_rec:  &Receiver<RaftMsg>,
+                     endpoint_rec: &Receiver<(ClientCmdReq, Sender<ClientCmdRes>)>) {
+
+            // Use every time an invocation may transition the state machine
+            // Macro Guide: http://static.rust-lang.org/doc/master/guide-macros.html
+            macro_rules! may_transition (
+                ($e:expr) => (
+                    match $e {
+                        NextState(new_state) => {
+                            debug!("Trans {:?} ==> {:?}", self.current_state, new_state);
+
+                            self.handle_teardown();
+
+                            self.new_state(new_state);
+
+                            continue;
+                        },
+                        Stop => {
+                            debug!("Stop {:?} ==> ()", self.current_state);
+
+                            self.handle_teardown();
+
+                            break;
+                        },
+                        Continue => {}
+                    }
+                    )
+                    );
+
+            let select   = Select::new();
+            let mut timer_handle    = select.handle(timer_rec);
+            let mut peer_handle     = select.handle(peer_rec);
+            let mut endpoint_handle = select.handle(endpoint_rec);
+
+            unsafe {
+                timer_handle.add();
+                peer_handle.add();
+                endpoint_handle.add();
+            }
+
+            loop {
+                may_transition!(self.handle_setup());
+
+                let ready_id = select.wait();
+                if timer_handle.id() == ready_id {
+                    timer_handle.recv();
+                    may_transition!(self.handle_heartbeat());
+                }
+                else if peer_handle.id() == ready_id {
+                    // An Event Message from a Peer
+                    let event: RaftMsg = peer_handle.recv();
+                    match event {
+                        ARQ(ae_req, ae_chan) =>
+                            may_transition!(self.handle_append_entries_req(ae_req, ae_chan)),
+                        ARS(ae_res) =>
+                            may_transition!(self.handle_append_entries_res(ae_res)),
+                        VRQ(vote_req, vote_chan) =>
+                            may_transition!(self.handle_vote_req(vote_req, vote_chan)),
+                        VRS(vote_res) =>
+                            may_transition!(self.handle_vote_res(vote_res)),
+                        StopReq => {
+                            may_transition!(Stop);
+                        }
                     }
                 }
+                else if endpoint_handle.id() == ready_id {
+                    // An Event Message from an Endpoint
+                    let (req, chan) = endpoint_handle.recv();
+                    may_transition!(self.handle_application_req(req, chan));
+                }
             }
-            else if endpoint_handle.id() == ready_id {
-                // An Event Message from an Endpoint
-                let (req, chan) = endpoint_handle.recv();
-                may_transition!(self.handle_application_req(req, chan));
+
+            unsafe {
+                timer_handle.remove();
+                peer_handle.remove();
+                endpoint_handle.remove();
             }
         }
 
-        unsafe {
-            timer_handle.remove();
-            peer_handle.remove();
-            endpoint_handle.remove();
-        }
-    }
-
-    //
-    // Event handlers (called from main_loop(...))
-    fn handle_setup(&mut self) -> RaftStateTransition {
-        if !self.is_setup {
-            let res = state_proxy!(leader_setup,
-                                   candidate_setup,
-                                   follower_setup);
-            self.is_setup = true;
-            res
-        }
-        else {
-            Continue
-        }
-    }
-
-    fn handle_teardown(&mut self) {
-        state_proxy!(leader_teardown,
-                     candidate_teardown,
-                     follower_teardown)
-    }
-
-    // This is called every heartbeat_interval msecs. I believe it
-    // should only be used by the leader, but I could be wrong.
-    fn handle_heartbeat(&mut self) -> RaftStateTransition {
-        if self.is_leader() {
-            self.leader_heartbeat()
-        }
-        else {
-            Continue
-        }
-    }
-
-    fn handle_append_entries_req(&mut self, req: AppendEntriesReq, chan: Sender<AppendEntriesRes>) -> RaftStateTransition {
-        state_proxy!(leader_append_entries_req,
-                     candidate_append_entries_req,
-                     follower_append_entries_req,
-                     req, chan)
-    }
-
-    fn handle_append_entries_res(&mut self, res: AppendEntriesRes) -> RaftStateTransition {
-        state_proxy!(leader_append_entries_res,
-                     candidate_append_entries_res,
-                     follower_append_entries_res,
-                     res)
-    }
-
-    fn handle_vote_req(&mut self, req: VoteReq, chan: Sender<VoteRes>) -> RaftStateTransition {
-        state_proxy!(leader_vote_req,
-                     candidate_vote_req,
-                     follower_vote_req,
-                     req, chan)
-    }
-
-    fn handle_vote_res(&mut self, res: VoteRes) -> RaftStateTransition {
-        state_proxy!(leader_vote_res,
-                     candidate_vote_res,
-                     follower_vote_res,
-                     res)
-    }
-
-
-    // In these, it's probably just easier to call the functions
-    // in the Leader trait directly.
-    fn handle_application_req(&mut self, req: ClientCmdReq, chan: Sender<ClientCmdRes>) -> RaftStateTransition {
-         if self.is_leader() {
-            if (self.log.append_entries(&req).is_ok()) {
-                //TODO respond to client after entry applied to state machine
+        //
+        // Event handlers (called from main_loop(...))
+        fn handle_setup(&mut self) -> RaftStateTransition {
+            if !self.is_setup {
+                let res = state_proxy!(leader_setup,
+                                       candidate_setup,
+                                       follower_setup);
+                self.is_setup = true;
+                res
             }
-        // else {
-        //     reply with info on how to talk to the leader
-        // }
-        Continue
-    }
+            else {
+                Continue
+            }
+        }
 
-    //
-    // Generic Helper Methods
-    //
+        fn handle_teardown(&mut self) {
+            state_proxy!(leader_teardown,
+                         candidate_teardown,
+                         follower_teardown)
+        }
 
-    fn is_leader(&self) -> bool {
-        self.current_state == RaftLeader
-    }
+        // This is called every heartbeat_interval msecs. I believe it
+        // should only be used by the leader, but I could be wrong.
+        fn handle_heartbeat(&mut self) -> RaftStateTransition {
+            if self.is_leader() {
+                self.leader_heartbeat()
+            }
+            else {
+                Continue
+            }
+        }
 
+        fn handle_append_entries_req(&mut self, req: AppendEntriesReq, chan: Sender<AppendEntriesRes>) -> RaftStateTransition {
+            state_proxy!(leader_append_entries_req,
+                         candidate_append_entries_req,
+                         follower_append_entries_req,
+                         req, chan)
+        }
+
+        fn handle_append_entries_res(&mut self, res: AppendEntriesRes) -> RaftStateTransition {
+            state_proxy!(leader_append_entries_res,
+                         candidate_append_entries_res,
+                         follower_append_entries_res,
+                         res)
+        }
+
+        fn handle_vote_req(&mut self, req: VoteReq, chan: Sender<VoteRes>) -> RaftStateTransition {
+            state_proxy!(leader_vote_req,
+                         candidate_vote_req,
+                         follower_vote_req,
+                         req, chan)
+        }
+
+        fn handle_vote_res(&mut self, res: VoteRes) -> RaftStateTransition {
+            state_proxy!(leader_vote_res,
+                         candidate_vote_res,
+                         follower_vote_res,
+                         res)
+        }
+
+
+        // In these, it's probably just easier to call the functions
+        // in the Leader trait directly.
+        fn handle_application_req(&mut self, req: ClientCmdReq, chan: Sender<ClientCmdRes>) -> RaftStateTransition {
+            if self.is_leader() {
+                if (self.log.append_entries(&req).is_ok()) {
+                    //TODO respond to client after entry applied to state machine
+                }
+                // else {
+                //     reply with info on how to talk to the leader
+                // }
+                Continue
+            }
+        }
+
+        //
+        // Generic Helper Methods
+        //
+
+        fn is_leader(&self) -> bool {
+            self.current_state == RaftLeader
+        }
 }
-
-
