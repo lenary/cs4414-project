@@ -20,9 +20,9 @@ pub struct LockState {
 impl LockState {
   pub fn spawn(recv: Receiver<(ClientCmdReq, Sender<ClientCmdRes>)>) {
     spawn(proc() {
-      ls = LockState::new();
+      let mut ls = LockState::new();
       
-      ls.loop(recv);
+      ls.lock_loop(recv);
     });
   }
   
@@ -33,10 +33,13 @@ impl LockState {
     }
   }
   
-  fn loop(&mut self, recv: Receiver<(ClientCmdReq, Sender<ClientCmdRes>)>) {
+  fn lock_loop(&mut self, recv: Receiver<(ClientCmdReq, Sender<ClientCmdRes>)>) {
     loop {
       let (cmd, sender) = recv.recv();
       
+      // spawn(proc() {
+      // 	let result = self.lock(); 
+
       //self.lock();
       
 

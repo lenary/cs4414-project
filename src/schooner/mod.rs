@@ -38,6 +38,7 @@ use self::net::*;
 use events::{ClientCmdReq, ClientCmdRes};
 use self::events::append_entries::{AppendEntriesReq,AppendEntriesRes};
 use self::server::RaftServer;
+use self::state_machine::LockState;
 
 mod events;
 mod consistent_log;
@@ -55,7 +56,7 @@ fn main() {
     let (sm_send, sm_recv): (Sender<(ClientCmdReq, Sender<ClientCmdRes>)>,
                              Receiver<(ClientCmdReq, Sender<ClientCmdRes>)>) = channel();
 
-    LockServer::spawn(sm_recv);
+    LockState::spawn(sm_recv);
     // spawn(proc() {
     //     // Stupid dummy state machine
     //     loop {
