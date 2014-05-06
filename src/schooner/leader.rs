@@ -55,24 +55,18 @@ impl Leader for RaftServerState {
 
     fn leader_append_entries_req(&mut self, req: AppendEntriesReq, chan: Sender<AppendEntriesRes>) -> RaftStateTransition {
 
-        //add entry to local log
-        if (self.log.append_entries(&req).is_ok()) {
-            //send entry to followers
-            self.peers.msg_all_peers(RpcARQ(req));
-        }
+        //send entry to followers
+        self.peers.msg_all_peers(RpcARQ(req));
 
         Continue
     }
 
     fn leader_append_entries_res(&mut self, res: AppendEntriesRes) -> RaftStateTransition {
-
         //listen for a conform (majority of peers) of the log
-
         //pass the log into application state machine
         //pass the log to client using RaftAppMsg<AppMsg>
         Continue
     }
-
 
     fn leader_vote_req(&mut self, req: VoteReq, chan: Sender<VoteRes>) -> RaftStateTransition {
         Continue

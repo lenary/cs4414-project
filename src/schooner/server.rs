@@ -227,23 +227,6 @@ impl RaftServerState {
     fn new(current_state: RaftNextState,
            to_app_sm: Sender<(ClientCmdReq, Sender<ClientCmdRes>)>,
            peers: Peers) -> RaftServerState {
-        /*
-        let (from_peers_send, from_client_send) = channel();
-        let conf: NetPeerConfig = NetPeerConfig {
-            id: 1,
-            address: SocketAddr {
-                ip: Ipv4Addr(127, 0, 0, 1),
-                port: 6666,
-            },
-            client_addr: SocketAddr {
-                ip: Ipv4Addr(127, 0, 0, 1),
-                port: 6667,
-            },
-        };
-        let peer_configs: Vec<NetPeerConfig> = Vec::new();
-        let peers = Peers::new(conf, peer_configs, from_peers_send, from_client_send);
-        */
-
         RaftServerState {
             current_state: current_state,
             is_setup: false,
@@ -404,13 +387,14 @@ impl RaftServerState {
     // In these, it's probably just easier to call the functions
     // in the Leader trait directly.
     fn handle_application_req(&mut self, req: ClientCmdReq, chan: Sender<ClientCmdRes>) -> RaftStateTransition {
-        Continue
-        // if self.is_leader() {
-        //     pass to application state machine
-        // }
+         if self.is_leader() {
+            if (self.log.append_entries(&req).is_ok()) {
+                //TODO respond to client after entry applied to state machine
+            }
         // else {
         //     reply with info on how to talk to the leader
         // }
+        Continue
     }
 
     //
