@@ -55,8 +55,13 @@ impl Leader for RaftServerState {
     }
 
     fn leader_append_entries_req(&mut self, req: AppendEntriesReq, chan: Sender<AppendEntriesRes>) -> RaftStateTransition {
+        if req.commit_idx > self.last_applied {
+            self.last_applied += 1;
+            // TODO:
+            // self.to_app_sm.send(log(lastApplied))
+        }
 
-        //From Raft spec:
+        //Raft paper:
         //If RPC request or response contains term T > currentTerm: set currentTerm = T,
         //convert to follower
         for entry in req.entries.iter() {
