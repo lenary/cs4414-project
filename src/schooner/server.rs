@@ -146,6 +146,7 @@ impl RaftServer {
 
 pub struct RaftServerState {
     current_state: RaftNextState,
+    log: Log,
     is_setup:      bool,
 
     to_app_sm:     Sender<(ClientCmdReq, Sender<ClientCmdRes>)>,

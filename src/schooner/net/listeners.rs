@@ -1,7 +1,9 @@
 use std::io::{Acceptor, Listener, TcpListener, TcpStream, IoResult, BufferedReader};
 use std::io::net::ip::SocketAddr;
 use std::io::net::tcp::TcpAcceptor;
+use std::io::timer::sleep;
 use super::macros::*;
+use super::parsers::*;
 use super::super::events::{ClientCmdReq, ClientCmdRes};
 
 static CONNECT_TIMEOUT: u64 = 3000;
@@ -22,32 +24,26 @@ pub fn listen_peers(this_id: uint, addr: SocketAddr) -> (Sender<uint>, Receiver<
         debug!("{}: Started listening for peers @ {}", this_id, addr);
         loop {
             acceptor.set_timeout(Some(CONNECT_TIMEOUT));
-            for maybe_stream in acceptor.incoming() {
-                match maybe_stream {
-                    Ok(mut stream) => {
-                        debug!("{}: got a connection from {}", this_id, stream.peer_name());
-                        let mut reader = ~BufferedReader::new(stream);
-                        let line = reader.read_line();
-                        let id: Option<uint> = line.ok().and_then(|l| from_str(l));
-                        if id.is_some() {
-                            let id = id.unwrap();
-                            let mut stream = reader.unwrap();
+            match acceptor.accept() {
+                Ok(mut stream) => {
+                    debug!("{}: got a connection from {}", this_id, stream.peer_name());
+                    match read_helo(stream.clone()) {
+                        Ok(id) => { 
                             debug!("{}: identified {} as peer {}.", this_id, stream.peer_name(), id);
                             peer_send.send((id, stream));
                         }
-                        else {
-                            let mut stream = reader.unwrap();
-                            debug!("{}: Dropping peer at {} never got an id.", this_id, stream.peer_name());
+                        Err(e) => {
+                            debug!("{}: Dropping peer at {}: bad HELO.", this_id, stream.peer_name());
                             drop(stream);
                         }
                     }
-                    Err(e) => {
-                        break;
-                    }
+                }
+                Err(e) => {
+                    break;
                 }
             }
             may_shutdown!(shutdown);
-            debug!("{}: listening ...", this_id);
+            debug!("[{}] Listening for peers ...", this_id);
         }
     });
     (shutdown_send, peer_recv)
@@ -69,18 +65,22 @@ pub fn listen_clients(this_id: uint, addr: SocketAddr, from_client_send: Sender<
         let mut acceptor: TcpAcceptor = listener.listen().unwrap();
         debug!("{}: Started listening for clients @ {}", this_id, addr);
         loop {
+            // TODO
+            may_shutdown!(shutdown_signal);
+            sleep(3000);
+            /*
+            may_shutdown!(shutdown_signal);
             acceptor.set_timeout(Some(CONNECT_TIMEOUT));
-            for maybe_stream in acceptor.incoming() {
-                match maybe_stream {
-                    Ok(stream) => {
-                        // TODO!
-                    }
-                    Err(e) => {
-                        break;
-                    }
+            match acceptor.accept() {
+                Ok(stream) => {
+                    // TODO!
+                }
+                Err(e) => {
+                    break;
                 }
             }
-            may_shutdown!(shutdown_signal);
+            debug!("[{}] Listening for clients ...", this_id);
+            */
         }
     });
     shutdown_send
@@ -95,15 +95,17 @@ mod test{
     use std::io::BufferedWriter;
     use std::container::MutableSet;
     use super::super::types::*;
+    use super::super::parsers::*;
     use super::{listen_peers};
 
     
     fn connect_handshake(id: uint, addr: SocketAddr) {
         match TcpStream::connect(addr) {
             Ok(mut stream) => {
-                let mut writer = BufferedWriter::new(stream);
-                writer.write_uint(id);
-                drop(writer.unwrap());
+                if stream.write(make_id_bytes(id)).is_err() {
+                    fail!("Couldn't send ID");
+                }
+                drop(stream);
             }
             Err(e) => {
                 fail!("{}", e);

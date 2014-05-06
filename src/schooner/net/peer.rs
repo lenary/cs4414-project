@@ -53,17 +53,25 @@ impl NetPeer {
     }
 
     fn try_connect(&mut self) -> bool {
+        self.check_mgmt_msg();
+        if self.shutdown {
+            return false;
+        }
         match TcpStream::connect_timeout(self.conf.address, CONNECT_TIMEOUT) {
             Ok(mut stream) => {
-                stream.write(make_id_bytes(self.id));
-                debug!("[{}] Sent handshake req to {}", self.id, self.conf.address);
+                if stream.write(make_id_bytes(self.id)).is_err() {
+                    drop(stream);
+                    return false;
+                }
+                debug!("[{}] Sent handshake req to {}", self.id, self.conf.id);
                 let success = self.attach_stream(stream.clone());
                 if !success {
                     drop(stream);
                 }
                 success
             }
-            Err(_) => {
+            Err(e) => {
+                debug!("[{}] Err connecting to {}: {}@{}", self.id, self.conf.id, self.conf.address, e);
                 false
             }
         }
@@ -75,18 +83,23 @@ impl NetPeer {
             self.check_mgmt_msg();
             if self.stream.is_none() { self.try_connect(); }
             if self.shutdown         { return; }
+            sleep(CONNECT_TIMEOUT);
         }
         let mut stream = self.stream.clone().unwrap();
         let sender = self.to_raft.clone();
+        self.check_mgmt_msg();
         debug!("[{}] Attached stream from {}.", self.id, stream.peer_name());
         loop {
             sleep(CONNECT_TIMEOUT);
+            self.check_mgmt_msg();
             let either_rpc = read_rpc(stream.clone());
             match either_rpc {
                 Ok(rpc) => {
+                    self.check_mgmt_msg();
                     self.send_rpc(rpc, stream.clone());
                 }
                 Err(e) => {
+                    self.check_mgmt_msg();
                     if self.stream.is_some() {
                         let mut stream = self.stream.take_unwrap();
                         drop(stream);
@@ -97,11 +110,14 @@ impl NetPeer {
                 }
             }
         }
-        debug!("[{}] Broke from main loop", self.id);
         self.stream = None;
         self.check_mgmt_msg();
         if !self.shutdown {
+            debug!("[{}] No shutdown msg: spinning back up ...", self.id);
             self.peer_loop();
+        }
+        else {
+            debug!("[{}] shutting down.", self.id);
         }
     }
 
@@ -140,8 +156,14 @@ impl NetPeer {
                 let (resp_send, resp_recv) = channel();
                 self.to_raft.send(ARQ(aereq, resp_send));
                 let aeres = resp_recv.recv();
-                stream.write(as_network_msg(RpcARS(aeres)));
-                true
+                let msg = as_network_msg(RpcARS(aeres));
+                match stream.write(msg) {
+                    Ok(_) => true,
+                    Err(_) => {
+                        drop(stream);
+                        false
+                    }
+                }
             }
             RpcARS(aeres) => {
                 debug!("[{}] Received ARS: {}", self.id, aeres);
@@ -153,8 +175,14 @@ impl NetPeer {
                 let (resp_send, resp_recv) = channel();
                 self.to_raft.send(VRQ(votereq, resp_send));
                 let voteres = resp_recv.recv();
-                stream.write(as_network_msg(RpcVRS(voteres)));
-                true
+                let msg = as_network_msg(RpcVRS(voteres));
+                match stream.write(msg) {
+                    Ok(_) => true,
+                    Err(_) => {
+                        drop(stream);
+                        false
+                    }
+                }
             }
             RpcVRS(voteres) => {
                 debug!("[{}] Received VRS: {}", self.id, voteres);
@@ -177,7 +205,8 @@ impl NetPeer {
      * an open connection to this peer (so this connection gets dropped).
      */
     pub fn attach_stream(&mut self, stream: TcpStream) -> bool {
-        if self.stream.is_some() {
+        self.check_mgmt_msg();
+        if self.stream.is_some() || self.shutdown {
             drop(stream);
             return false;
         }
@@ -202,9 +231,6 @@ mod test {
     use super::super::types::*;
     use super::super::parsers::*;
 
-    /*
-     * Can we parse content length fields?
-     */
     #[test]
     fn test_spawn() {
         let pc = NetPeerConfig {
