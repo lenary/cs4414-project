@@ -1,7 +1,3 @@
-#![allow(dead_code)]
-#![feature(globs)]
-#![feature(macro_rules)]
-
 use super::events::*;
 use super::events::append_entries::{AppendEntriesReq, AppendEntriesRes};
 use super::events::{VoteReq, VoteRes};

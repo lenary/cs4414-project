@@ -1,4 +1,4 @@
-#![feature(globs)]
+
 use super::events::*;
 use super::net::*;
 use super::net::RaftRpc;
@@ -37,7 +37,6 @@ impl Leader for RaftServerState {
     }
 
     fn leader_teardown(&mut self) {
-        self.new_state(RaftFollower);
     }
 
     fn leader_heartbeat(&mut self) -> RaftStateTransition {
