@@ -55,7 +55,7 @@ impl Peers {
     /*
      * Get the ids of the known peers for this network listener.
      */
-    fn get_peer_ids(&self) -> Vec<uint> {
+    pub fn get_peer_ids(&self) -> Vec<uint> {
         let mut ids = Vec::new();
         for conf in self.peer_configs.iter() {
             ids.push(conf.id);

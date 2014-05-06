@@ -15,6 +15,7 @@ use std::io::net::ip::{SocketAddr, Ipv4Addr};
 use std::comm::*;
 use std::io::timer::Timer;
 use std::vec::Vec;
+use uuid::{Uuid, UuidVersion, Version4Random};
 use net::Peers;
 
 // Some kind of Idea for how the whole thing works:
@@ -165,7 +166,9 @@ pub struct RaftServerState {
 
     pub peers:     Peers,
     pub log:       Log,
-    pub id:        u64
+    pub id:        u64,
+    pub peers_to_confirm: Vec<uint>,
+    pub peers_have_confirmed: Vec<uint>
 }
 
 #[deriving(Eq,Clone,Show)]
@@ -227,13 +230,16 @@ impl RaftServerState {
     fn new(current_state: RaftNextState,
            to_app_sm: Sender<(ClientCmdReq, Sender<ClientCmdRes>)>,
            peers: Peers) -> RaftServerState {
+        let id : u64 = 0u64; //TODO maintain an id map
         RaftServerState {
             current_state: current_state,
             is_setup: false,
             to_app_sm: to_app_sm,
             peers: peers,
-            log: *Log::new(Path::new(&"datalog/log.test")).unwrap(), //how to properly index the log files?
-            id: 0u64 //TODO maintain an id map
+            id: id,
+            log: *Log::new(Path::new(&"datalog/log.test")).unwrap(),
+            peers_to_confirm: Vec::new(),
+            peers_have_confirmed: Vec::new()
         }
     }
 
@@ -388,12 +394,21 @@ impl RaftServerState {
     // in the Leader trait directly.
     fn handle_application_req(&mut self, req: ClientCmdReq, chan: Sender<ClientCmdRes>) -> RaftStateTransition {
          if self.is_leader() {
-            if (self.log.append_entries(&req).is_ok()) {
+            let aer = AppendEntriesReq{
+                                term: self.log.term,
+                                prev_log_idx: self.log.idx,
+                                prev_log_term: self.log.term,
+                                commit_idx: self.log.idx,
+                                leader_id: self.id,
+                                uuid: Uuid::new(Version4Random).unwrap(),
+                                entries: Vec::new()}; //TODO take entry info out of ClientCmdReq after it is fleshed out
+            if (self.log.append_entries(&aer).is_ok()) {
                 //TODO respond to client after entry applied to state machine
             }
         // else {
         //     reply with info on how to talk to the leader
         // }
+        }
         Continue
     }
 

@@ -55,16 +55,43 @@ impl Leader for RaftServerState {
 
     fn leader_append_entries_req(&mut self, req: AppendEntriesReq, chan: Sender<AppendEntriesRes>) -> RaftStateTransition {
 
+        //From Raft spec:
+        //If RPC request or response contains term T > currentTerm: set currentTerm = T,
+        //convert to follower
+        for entry in req.entries.iter() {
+            if (entry.term > self.log.term) {
+                self.log.term = entry.term;
+                self.new_state(RaftFollower);
+            }
+        }
+
         //send entry to followers
         self.peers.msg_all_peers(RpcARQ(req));
+        //add all peers to peers_to_confirm list
+        self.peers_to_confirm = self.peers.get_peer_ids();
 
         Continue
     }
 
     fn leader_append_entries_res(&mut self, res: AppendEntriesRes) -> RaftStateTransition {
+
+        if (res.term > self.log.term) {
+            self.log.term = res.term;
+            self.new_state(RaftFollower);
+        }
+
         //listen for a conform (majority of peers) of the log
-        //pass the log into application state machine
-        //pass the log to client using RaftAppMsg<AppMsg>
+        if (self.peers_to_confirm.contains(&res.id) &&
+            !self.peers_have_confirmed.contains(&res.id)) {
+            self.peers_have_confirmed.push(res.id);
+            if (self.peers_have_confirmed.len() >= self.peers_to_confirm.len()) {
+                //conform reached
+                //TODO
+                //pass the log into application state machine
+                //pass the log to client using RaftAppMsg<AppMsg>
+            }
+        }
+
         Continue
     }
 
