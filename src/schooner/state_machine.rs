@@ -42,99 +42,152 @@ match state {
 }
 */
 
-pub enum State {
-    Locked,
-    Unlocked
-}
-pub struct Locked {
-    locked: bool,
-    state: Option<int>,
-    id: Option<int>
-}
+// pub enum LockState {
+//     Locked,
+//     Unlocked
+// }
 
-pub struct Unlocked {
-    unlocked: bool,
-    state: Option<int>,
-    id: Option<int>
-}
+// pub struct Locked {
+//     locked: bool,
+//     state: Option<int>,
+//     id: Option<int>
+// }
 
-pub struct LockRes {
-    new_state: Option<State>,
-    status: bool,
-    id: Option<int>
-}
+// pub struct Unlocked {
+//     unlocked: bool,
+//     state: Option<int>,
+//     id: Option<int>
+// }
 
-pub struct UnlockRes {
-    new_state: Option<State>,
-    status: bool,
-    id: Option<int>
+pub struct LockState {
+	locked: bool,
+	counter: uint
 }
 
-impl Unlocked {
+// pub struct LockRes {
+//     new_state: Option<State>,
+//     status: bool,
+//     id: Option<int>
+// }
 
-    fn lock_request(object: &mut Unlocked) -> LockRes {
-        if object.unlocked {
+// pub struct UnlockRes {
+//     new_state: Option<State>,
+//     status: bool,
+//     id: Option<int>
+// }
+ 
+impl LockState {
+  pub fn spawn(recv: Receiver<(ClientCmdReq, Sender<ClientCmdRes>)>) {
+    spawn(proc() {
+      ls = LockState::new();
+      
+      ls.loop(recv);
+    });
+  }
+  
+  fn new() -> LockState {
+    LockState { 
+      locked: false,
+      counter: 0
+    }
+  }
+  
+  fn loop(&mut self, recv: Receiver<(ClientCmdReq, Sender<ClientCmdRes>)) {
+    loop {
+      let (cmd, sender) = recv.recv();
+      
+      //call self.lock() and self.unlock(uint) here
+      
+    }
+  }
+  
+  fn lock(&mut self) -> Option<uint> {
+    if !self.locked {
+      self.locked = true;
+      Some(self.counter)
+    } else {
+      None
+    }
+  }
+  
+  fn unlock(&mut self, lockval: uint) -> bool {
+    if self.locked  && self.counter == lockval { 
+      self.locked = false;
+      self.counter += 1;
+      true
+    }
+    else {
+      false
+    }
+  }
+}
+
+// impl LockState {
+
+//     fn lock_request(object: &mut LockState) -> LockRes {
+//         if !object.locked { //if unlocked
             
-            //update with some deterministic but RANDOM NUMBER
-            let mut rand_num = task_rng().gen::<int>();
-            // if rand_num.gen() {
-            // 	println!("int: {}, uint: {}", rng.gen::<int>(), rng.gen::<uint>())
-            // }
+//             //update with some deterministic but RANDOM NUMBER
+//             // let mut rand_num = task_rng().gen::<int>();
+//             // if rand_num.gen() {
+//             // 	println!("int: {}, uint: {}", rng.gen::<int>(), rng.gen::<uint>())
+//             // }
 
-            let result = LockRes { new_state: Some(Locked), status: true, id: Some(rand_num) };         
-            result
-            //- send lock msg on a Chan 
-            //endp_send.send(result);
-            //- send "true" and <id> on Chan
-        }
+//             let result = LockRes {new_state: Some(Locked), status: true, id: Some(rand_num) };         
+//             result
+//             //- send lock msg on a Chan 
+//             //endp_send.send(result);
+//             //- send "true" and <id> on Chan
+//         }
 
-        else if !object.unlocked {
-            //already locked do nothing
-        }
-    }
+//         else if object.locked { //if already locked
+//             //do nothing
+//         }
+//     }
 
-    fn unlock_request(object: &mut Unlocked) -> UnlockRes {
-        if object.unlocked {
-            //already unlocked
-            }
-        // else if !self.locked {
-        //     Continue //already unlocked do nothing
-        // }
-    }
-}
+//     fn unlock_request(object: &mut Unlocked) -> UnlockRes {
+//         if object.locked { //if locked
+//             let result = UnlockRes {new_state: Some(Unlocked), status: false, id: None};
+//             result
+//             }
+//         // else if !self.locked {
+//         //     Continue //already unlocked do nothing
+//         // }
+//     }
+// }
 
-impl Locked {
+// impl Locked {
 
-    fn unlock_request(object: &mut Locked, request_id: Option<int>) -> UnlockRes {
-        if object.locked {
-            match request_id {
-            	Some(id) => { let result = UnlockRes {
-            							new_state: Some(Unlocked), 
-            							status: true, 
-            							id: None};
-            							result 
-            						},
+//     fn unlock_request(object: &mut Locked, request_id: Option<int>) -> UnlockRes {
+//         if object.locked {
+//             match request_id {
+//             	Some(id) => { let result = UnlockRes {
+//             							new_state: Some(Unlocked), 
+//             							status: true, 
+//             							id: None};
+//             							result 
+//             						},
             	
-            	None => {}//do nothing
+//             	None => {}//do nothing
 			
-                //id sent by request does not match, continue/do nothing
-				//if unlock request (with same <id>) send unlock msg on Chan + "true" and <id> on Chan
-            }
-        }
+//                 //id sent by request does not match, continue/do nothing
+// 				//if unlock request (with same <id>) send unlock msg on Chan + "true" and <id> on Chan
+//             }
+//         }
 
-        else if !object.locked {
-            //already unlocked, do nothing
-        }
-    }
+//         else if !object.locked {
+//             //already unlocked, do nothing
+//         }
+//     }
 
-    fn lock_request(object: &mut Locked) -> LockRes {
-        if object.locked {
-            //already locked
-        }
+//     fn lock_request(object: &mut Locked) -> LockRes {
+//         if object.locked {
+//             //already locked
+//         }
 
-        // else if !self.locked {
-        //     Continue //already locked do nothing
-        // }
-	}
-}
+//         // else if !self.locked {
+//         //     Continue //already locked do nothing
+//         // }
+// 	}
+// }
 
