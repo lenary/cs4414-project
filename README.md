@@ -24,7 +24,7 @@ of the design of Schooner.
 
 ### Background
 
-Other links about the Raft protocol:
+Other links about the Raft Algorithm:
 
 * http://raftconsensus.github.io/
 * https://www.youtube.com/watch?v=YbZ3zDzDnrw
@@ -32,15 +32,27 @@ Other links about the Raft protocol:
   * [Slides for this presentation](https://speakerdeck.com/benbjohnson/raft-the-understandable-distributed-consensus-protocol)
 * http://www.reddit.com/comments/1jm6c8
 
-The wikipedia pages, describing:
+The Wikipedia pages, describing:
 
 * The Consensus Problem: http://en.wikipedia.org/wiki/Consensus_(computer_science)
 * Paxos: http://en.wikipedia.org/wiki/Paxos_(computer_science)
 * Raft: http://en.wikipedia.org/wiki/Raft_consensus_algorithm
 
+### Team Members
+
+This was a project submitted as part of the [Spring 2014 UVA Computer
+Science Operating Systems Course](http://rust-class.org/), and was
+developed by a group consisiting of:
+
+* [Michael Peterson](https://github.com/quux00) (Project Initiator)
+* [Chun Wang](https://github.com/chunw)
+* [Esteban Amas](https://github.com/eea4ue)
+* [Nathan Typanski](https://github.com/nathantypanski)
+* [Sam Elliott](https://github.com/lenary)
+
 ### LICENSE
 
-The library will licensed under the permissive
+The library is licensed under the permissive
 [MIT License](http://opensource.org/licenses/MIT), as defined in the
 `LICENCE` file.
 
