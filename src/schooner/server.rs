@@ -229,12 +229,18 @@ impl RaftServerState {
            to_app_sm: Sender<(ClientCmdReq, Sender<ClientCmdRes>)>,
            peers: Peers) -> RaftServerState {
         RaftServerState {
+            id: 0u64 //TODO maintain an id map
             current_state: current_state,
             is_setup: false,
             to_app_sm: to_app_sm,
             peers: peers,
+            // Raft paper: "persistent state on all servers"
+            current_term: uint,
+            voted_for: uint,
             log: *Log::new(Path::new(&"datalog/log.test")).unwrap(), //how to properly index the log files?
-            id: 0u64 //TODO maintain an id map
+            // Raft paper: "Volatile state on all servers"
+            commit_index: uint,
+            last_applied: uint,
         }
     }
 

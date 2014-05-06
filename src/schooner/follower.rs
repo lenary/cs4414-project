@@ -34,7 +34,12 @@ impl Follower for RaftServerState {
 
 
     fn follower_append_entries_req(&mut self, req: AppendEntriesReq, chan: Sender<AppendEntriesRes>) -> RaftStateTransition {
-        // redirect client to leader
+        if req.commit_idx > self.last_applied {
+            self.last_applied += 1;
+            // TODO:
+            // self.to_app_sm.send(log(lastApplied))
+        }
+        
         Continue
     }
 
