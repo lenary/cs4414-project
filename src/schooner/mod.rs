@@ -27,8 +27,6 @@ use std::{cmp};
 use std::vec::Vec;
 use std::io::Timer;
 
-// TODO: None of this should be in this module. It should go into net
-// (I believe they are all to do with communicating with Peers)
 use std::io::IoResult;
 use rand::{task_rng,Rng};
 use sync::TaskPool;
@@ -54,7 +52,7 @@ fn main() {
     let (sm_send, sm_recv): (Sender<(ClientCmdReq, Sender<ClientCmdRes>)>,
                              Receiver<(ClientCmdReq, Sender<ClientCmdRes>)>) = channel();
     spawn(proc() {
-        // Stupid dummy state machine
+        // TODO: Example State Machine
         loop {
             sm_recv.recv();
         }

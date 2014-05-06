@@ -9,7 +9,6 @@ use serialize::{json, Decodable};
 
 use super::events::append_entries::AppendEntriesReq;
 
-
 ///
 /// Log maintains the current state of the log and has functionality associated with
 /// manipulating both the in-memory and on-disk version of the log.
