@@ -38,7 +38,7 @@ use std::vec::Vec;
 //    |     State     |
 //    |    Machine    |
 //    |       ^       |
-//    +---------------+
+//    +-------+-------+
 //            |
 //            |<-- RaftAppMsg<AppMsg>
 //            |
@@ -67,7 +67,7 @@ use std::vec::Vec;
 //
 
 // TODO: Parameterise by <AppMsg>, the type of messages that the app
-// uses
+// uses.
 pub struct RaftServer {
     election_timeout:  u64,
     heartbeat_interval: u64,
@@ -75,27 +75,6 @@ pub struct RaftServer {
     // TODO: store peers... somehow
     peer_configs: Vec<()>,
 }
-
-// static duplex to Application State Machine (from somewhere else)
-// static reciever from Application Endpoint  (
-// static reciever from Peer
-
-// Some ideas of how to use with Application Tasks:
-//
-// let (to_app_send, to_app_rec) = channel();
-// let (from_app_send, from_app_rec) = channel();
-//
-// spawn_app_task(to_app_rec, from_app_send);
-//
-// let (from_endpoint_send, from_endpoint_rec) = channel();
-//
-// spawn_main_app_endpoint_task(from_endpoint_send);
-//
-// rs = RaftServer::new(...opts...); // TODO
-// rs.add_peer(...peercfg...); // TODO
-// RaftServer::spawn(rs, to_app_send, from_app_rec, from_endpoint_rec);
-//
-
 
 impl RaftServer {
     pub fn new() -> RaftServer {
@@ -144,15 +123,22 @@ impl RaftServer {
     }
 }
 
+// This is the state within the main raft process including the Raft
+// Roles, and the Log.
 pub struct RaftServerState {
+    // State Machine
     current_state: RaftNextState,
     is_setup:      bool,
 
+    // Channel to message the Application State Machine with
     to_app_sm:     Sender<(ClientCmdReq, Sender<ClientCmdRes>)>,
 
+    // Peer Configurations
     peers:         Vec<()>,
 }
 
+// These are the possible Roles a Raft Peer could be in: Leader,
+// Candidate and Follower
 #[deriving(Eq,Clone,Show)]
 pub enum RaftNextState {
     RaftLeader,
@@ -160,6 +146,8 @@ pub enum RaftNextState {
     RaftFollower
 }
 
+// An Option<T>-like type for saying whether we should transition or
+// not (used as a return from the callback functions)
 #[deriving(Eq,Clone,Show)]
 pub enum RaftStateTransition {
     NextState(RaftNextState),
@@ -173,17 +161,24 @@ pub enum RaftStateTransition {
 //
 // Use this like so:
 //
-// state_proxy!(leader_handle_setup,
-//              candidate_handle_setup,
-//              follower_handle_setup);
+// state_proxy!(leader_setup,
+//              candidate_setup,
+//              follower_setup);
 //
 // or:
 //
-// state_proxy!(leader_handle_setup,
-//              candidate_handle_setup,
-//              follower_handle_setup,
-//              event);
-
+// state_proxy!(leader_append_entries_res,
+//              candidate_append_entries_res,
+//              follower_append_entries_res,
+//              res);
+//
+// or:
+//
+// state_proxy!(leader_append_entries_req,
+//              candidate_append_entries_req,
+//              follower_append_entrries_req,
+//              req, resp_chan);
+//
 macro_rules! state_proxy(
     ($l:ident, $c:ident, $f:ident) => {
         match self.current_state {
@@ -225,6 +220,12 @@ impl RaftServerState {
         self.is_setup = false;
     }
 
+    // The main peer loop. This does a few things:
+    // - Waits for requests and responses from peers
+    // - Waits for requests from the client endpoint
+    // - Waits for timeouts
+    //
+    // And then calls the appropriate callback when one appears.
     fn main_loop(&mut self,
                  timer_rec: &Receiver<()>,
                  peer_rec:  &Receiver<RaftMsg>,
@@ -308,7 +309,20 @@ impl RaftServerState {
 
     //
     // Event handlers (called from main_loop(...))
+    //
+    // They return RaftStateTransition so they can transition into
+    // another state based on the contents of the message recieved.
+    // (except handle_teardown, which is only called when you have
+    // asked for a transition)
+    //
+
+
+    // Called on becoming a given state, so that per-role state can be
+    // setup. By this time, self.current_state will have the right
+    // value.
     fn handle_setup(&mut self) -> RaftStateTransition {
+        // So setup only fires once, without having a loop within a
+        // loop.
         if !self.is_setup {
             let res = state_proxy!(leader_setup,
                                    candidate_setup,
@@ -321,14 +335,18 @@ impl RaftServerState {
         }
     }
 
+    // Called before becoming a new state, so that per-role state can
+    // be cleared up. self.current_state will not yet have been
+    // changed to its new value.
     fn handle_teardown(&mut self) {
         state_proxy!(leader_teardown,
                      candidate_teardown,
                      follower_teardown)
     }
 
-    // This is called every heartbeat_interval msecs. I believe it
-    // should only be used by the leader, but I could be wrong.
+
+    // This is called every heartbeat_interval msecs, so that the
+    // leader can send out heartbeats to the followers.
     fn handle_heartbeat(&mut self) -> RaftStateTransition {
         if self.is_leader() {
             self.leader_heartbeat()
@@ -338,13 +356,17 @@ impl RaftServerState {
         }
     }
 
-    fn handle_append_entries_req(&mut self, req: AppendEntriesReq, chan: Sender<AppendEntriesRes>) -> RaftStateTransition {
+    // Called upon recieving an AppendEntries RPC Request.
+    fn handle_append_entries_req(&mut self,
+                                 req: AppendEntriesReq,
+                                 chan: Sender<AppendEntriesRes>) -> RaftStateTransition {
         state_proxy!(leader_append_entries_req, 
                      candidate_append_entries_req,
                      follower_append_entries_req,
                      req, chan)
     }
 
+    // Called upon receiving a response to an AppendEntries RPC.
     fn handle_append_entries_res(&mut self, res: AppendEntriesRes) -> RaftStateTransition {
         state_proxy!(leader_append_entries_res,
                      candidate_append_entries_res,
@@ -352,6 +374,7 @@ impl RaftServerState {
                      res)
     }
 
+    // Called upon receiving a VoteRequest RPC.
     fn handle_vote_req(&mut self, req: VoteReq, chan: Sender<VoteRes>) -> RaftStateTransition {
         state_proxy!(leader_vote_req,
                      candidate_vote_req,
@@ -359,6 +382,7 @@ impl RaftServerState {
                      req, chan)
     }
 
+    // Called upon receiving Response to a VoteRequest RPC.
     fn handle_vote_res(&mut self, res: VoteRes) -> RaftStateTransition {
         state_proxy!(leader_vote_res,
                      candidate_vote_res,
@@ -367,9 +391,10 @@ impl RaftServerState {
     }
 
 
-    // In these, it's probably just easier to call the functions
-    // in the Leader trait directly.
-    fn handle_application_req(&mut self, req: ClientCmdReq, chan: Sender<ClientCmdRes>) -> RaftStateTransition {
+    // Called upon receiving a request from a client
+    fn handle_application_req(&mut self,
+                              req: ClientCmdReq,
+                              chan: Sender<ClientCmdRes>) -> RaftStateTransition {
         Continue
         // if self.is_leader() {
         //     pass to application state machine

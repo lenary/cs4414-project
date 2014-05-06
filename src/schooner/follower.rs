@@ -5,6 +5,8 @@ use super::server::RaftServerState;
 use super::server::{RaftStateTransition, NextState, Continue};
 use super::server::{RaftNextState, RaftLeader, RaftCandidate};
 
+// This module contains the callback functions for Raft Followers.
+//
 // Rust doesn't support arbitrary methods being defined in another
 // file... except with traits.
 //

@@ -5,6 +5,9 @@ use super::server::RaftServerState;
 use super::server::{RaftStateTransition, NextState, Continue};
 use super::server::{RaftNextState, RaftLeader, RaftFollower};
 
+// This file contains all the callback logic for Candidate Peers in
+// Raft.
+//
 // Rust doesn't support arbitrary methods being defined in another
 // file... except with traits.
 //
