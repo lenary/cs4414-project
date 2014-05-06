@@ -1,6 +1,6 @@
+use uuid::{Uuid, UuidVersion, Version4Random};
 
 use super::events::*;
-
 use super::server::RaftServerState;
 use super::server::{RaftStateTransition, NextState, Continue};
 use super::server::{RaftNextState, RaftLeader, RaftCandidate};
@@ -39,6 +39,21 @@ impl Follower for RaftServerState {
             // TODO:
             // self.to_app_sm.send(log(lastApplied))
         }
+        if req.term > self.current_term {
+            // TODO: maybe state transition to follower (do setup/teardown again)?
+            // Raft paper:
+            //     If RPC request or response contains term T > currentTerm:
+            //     set currentTerm = T, convert to follower
+        }
+        else if req.term < self.current_term {
+            chan.send(AppendEntriesRes {
+                success: false,
+                term: self.current_term,
+                uuid: Uuid::new(Version4Random).unwrap(),
+            });
+        }
+        // TODO: (pseudo-haskell for being concise ...)
+        // if len $ filter (self.log[previousLogIdx].term ==) (map (.term) req.entries) then reply false
         
         Continue
     }
